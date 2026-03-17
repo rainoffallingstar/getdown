@@ -144,6 +144,45 @@ type datasetMeta struct {
 	Status   string `json:"status"`
 }
 
+func (d *datasetMeta) UnmarshalJSON(b []byte) error {
+	// Some hub queries can return nulls for optional columns (e.g. probemap/status).
+	// Treat null as empty string for robustness.
+	type raw struct {
+		Name     json.RawMessage `json:"name"`
+		Type     json.RawMessage `json:"type"`
+		Probemap json.RawMessage `json:"probemap"`
+		Status   json.RawMessage `json:"status"`
+	}
+	var r raw
+	if err := json.Unmarshal(b, &r); err != nil {
+		return err
+	}
+	readString := func(m json.RawMessage) (string, error) {
+		if len(m) == 0 || string(m) == "null" {
+			return "", nil
+		}
+		var s string
+		if err := json.Unmarshal(m, &s); err != nil {
+			return "", err
+		}
+		return s, nil
+	}
+	var err error
+	if d.Name, err = readString(r.Name); err != nil {
+		return err
+	}
+	if d.Type, err = readString(r.Type); err != nil {
+		return err
+	}
+	if d.Probemap, err = readString(r.Probemap); err != nil {
+		return err
+	}
+	if d.Status, err = readString(r.Status); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (c *hubClient) listDatasetsByPrefix(ctx context.Context, prefix string) ([]datasetMeta, error) {
 	prefix = strings.TrimSpace(prefix)
 	if prefix == "" {

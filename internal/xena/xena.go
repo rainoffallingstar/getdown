@@ -54,6 +54,7 @@ func DownloadTCGA(ctx context.Context, req TCGARequest) (TCGAResult, error) {
 	}
 
 	// Prefer the hub API path because it supports multi-omics and doesn't rely on static mirrors.
+	var hubErr error
 	if mode == "all" {
 		if hubRes, err := downloadTCGAAllFromHub(ctx, req.Project, req.OutDir); err == nil {
 			return TCGAResult{
@@ -63,6 +64,8 @@ func DownloadTCGA(ctx context.Context, req TCGARequest) (TCGAResult, error) {
 				PhenotypeSourceURL:  hubRes.HubBase + "/data/ (" + hubRes.ClinicalDataset + ")",
 				DatasetFiles:        hubRes.DatasetFiles,
 			}, nil
+		} else {
+			hubErr = err
 		}
 	} else {
 		if hubRes, err := downloadTCGACoreFromHub(ctx, req.Project, req.OutDir); err == nil {
@@ -73,6 +76,8 @@ func DownloadTCGA(ctx context.Context, req TCGARequest) (TCGAResult, error) {
 				PhenotypeSourceURL:  hubRes.HubBase + "/data/ (" + hubRes.ClinicalDataset + ")",
 				DatasetFiles:        hubRes.DatasetFiles,
 			}, nil
+		} else {
+			hubErr = err
 		}
 	}
 
@@ -82,6 +87,9 @@ func DownloadTCGA(ctx context.Context, req TCGARequest) (TCGAResult, error) {
 	exprURL, exprRawPath, err := downloadFirstOK(ctx, c, exprCandidates, req.OutDir, req.RawDir, "expression.tsv")
 	if err != nil {
 		// Legacy fallback: static mirrors only.
+		if hubErr != nil {
+			return TCGAResult{}, fmt.Errorf("xena hub failed: %v; static mirrors failed: %w", hubErr, err)
+		}
 		return TCGAResult{}, fmt.Errorf("xena: expression: %w", err)
 	}
 	_ = exprRawPath // reserved for metadata later if desired
