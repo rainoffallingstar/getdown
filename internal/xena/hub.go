@@ -258,8 +258,53 @@ func (c *hubClient) listProbemapNames(ctx context.Context, probemap string) ([]s
 	return out, nil
 }
 
+type maybeFloat struct {
+	V *float64
+}
+
+func (m *maybeFloat) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "" || s == "null" {
+		m.V = nil
+		return nil
+	}
+	// JSON number
+	if s[0] != '"' {
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			m.V = nil
+			return nil
+		}
+		m.V = &f
+		return nil
+	}
+	// JSON string
+	var str string
+	if err := json.Unmarshal(b, &str); err != nil {
+		m.V = nil
+		return nil
+	}
+	str = strings.TrimSpace(str)
+	if str == "" {
+		m.V = nil
+		return nil
+	}
+	l := strings.ToLower(str)
+	if l == "na" || l == "nan" || l == "inf" || l == "+inf" || l == "-inf" {
+		m.V = nil
+		return nil
+	}
+	f, err := strconv.ParseFloat(str, 64)
+	if err != nil {
+		m.V = nil
+		return nil
+	}
+	m.V = &f
+	return nil
+}
+
 func (c *hubClient) fetchFloatMatrix(ctx context.Context, dataset string, samples []string, probes []string) ([][]*float64, error) {
-	var out [][]*float64
+	var out [][]maybeFloat
 	edn := ednCall(fnDatasetFetch, ednString(dataset), ednVecStrings(samples), ednVecStrings(probes))
 	if err := c.postEDN(ctx, edn, &out); err != nil {
 		return nil, err
@@ -267,7 +312,16 @@ func (c *hubClient) fetchFloatMatrix(ctx context.Context, dataset string, sample
 	if len(out) != len(probes) {
 		return nil, fmt.Errorf("xena hub: unexpected row count: got %d want %d", len(out), len(probes))
 	}
-	return out, nil
+	conv := make([][]*float64, len(out))
+	for i := range out {
+		row := out[i]
+		r := make([]*float64, len(row))
+		for j := range row {
+			r[j] = row[j].V
+		}
+		conv[i] = r
+	}
+	return conv, nil
 }
 
 func (c *hubClient) fetchAnyMatrix(ctx context.Context, dataset string, samples []string, fields []string) ([][]any, error) {

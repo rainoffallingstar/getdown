@@ -186,7 +186,8 @@ func TestE2E_TCGA_Xena_DownloadsAllOmics_LocalServer(t *testing.T) {
 				}
 				return resp(200, map[string]string{"Content-Type": "application/json"}, []byte(`{"name":[]}`), r), nil
 			case strings.Contains(body, "fn [dataset samples probes]") && strings.Contains(body, project+`.star_counts.tsv`):
-				return resp(200, map[string]string{"Content-Type": "application/json"}, []byte(`[[5,7],[10,11]]`), r), nil
+				// Mixed types: numbers as strings can happen on real hubs.
+				return resp(200, map[string]string{"Content-Type": "application/json"}, []byte(`[["5","7"],["10","11"]]`), r), nil
 			case strings.Contains(body, ":select [:field.name]") && strings.Contains(body, project+`.clinical.tsv`):
 				return resp(200, map[string]string{"Content-Type": "application/json"}, []byte(`["sampleID","age","group"]`), r), nil
 			case strings.Contains(body, `:field.name "sampleID"`) && strings.Contains(body, project+`.clinical.tsv`):
