@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -549,10 +550,12 @@ func downloadSupplementaryWithReport(ctx context.Context, c *httpx.Client, urls 
 		URL    string
 		File   string
 		Status string
+		Tries  int
 		Error  string
 	}
 	var rows []row
 	okCount := 0
+	var lastErr error
 
 	for _, u := range urls {
 		orig := strings.TrimSpace(u)
@@ -566,26 +569,42 @@ func downloadSupplementaryWithReport(ctx context.Context, c *httpx.Client, urls 
 		}
 		dest := filepath.Join(outDir, name)
 
-		if _, err := c.DownloadToFile(ctx, u, dest, false); err != nil {
-			rows = append(rows, row{URL: orig, File: dest, Status: "error", Error: err.Error()})
+		var err error
+		tries := 0
+		for tries = 1; tries <= 3; tries++ {
+			_, err = c.DownloadToFile(ctx, u, dest, false)
+			if err == nil {
+				break
+			}
+			lastErr = err
+			if ctx.Err() != nil {
+				break
+			}
+			time.Sleep(time.Duration(tries*5) * time.Second)
+		}
+		if err != nil {
+			rows = append(rows, row{URL: orig, File: dest, Status: "error", Tries: tries - 1, Error: err.Error()})
 			continue
 		}
 		okCount++
-		rows = append(rows, row{URL: orig, File: dest, Status: "ok", Error: ""})
+		rows = append(rows, row{URL: orig, File: dest, Status: "ok", Tries: tries, Error: ""})
 	}
 
 	reportPath = filepath.Join(outDir, "_report.tsv")
 	if f, rerr := os.Create(reportPath); rerr == nil {
 		w := bufio.NewWriterSize(f, 1<<20)
-		_, _ = w.WriteString("url\tfile\tstatus\terror\n")
+		_, _ = w.WriteString("url\tfile\tstatus\ttries\terror\n")
 		for _, r := range rows {
-			_, _ = w.WriteString(r.URL + "\t" + r.File + "\t" + r.Status + "\t" + strings.ReplaceAll(r.Error, "\n", " ") + "\n")
+			_, _ = w.WriteString(r.URL + "\t" + r.File + "\t" + r.Status + "\t" + strconv.Itoa(r.Tries) + "\t" + strings.ReplaceAll(r.Error, "\n", " ") + "\n")
 		}
 		_ = w.Flush()
 		_ = f.Close()
 	}
 
 	if strict && okCount == 0 {
+		if lastErr != nil {
+			return reportPath, fmt.Errorf("geo: header-only series matrix: supplementary download failed: %v (see %s)", lastErr, reportPath)
+		}
 		return reportPath, fmt.Errorf("geo: header-only series matrix: supplementary download failed (see %s)", reportPath)
 	}
 	return reportPath, nil

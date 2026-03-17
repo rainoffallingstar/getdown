@@ -55,7 +55,15 @@ jobs:
           }
 
           retry ./getdown geo  --gse "${GSE}" --out "_ci_out/geo_${GSE}" --timeout 20m
+          set +e
           retry ./getdown geo  --gse "gse235527" --out "_ci_out/geo_GSE235527" --timeout 90m
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "== GSE235527 supplementary report (if any) =="
+            cat _ci_out/geo_GSE235527/supplementary/_report.tsv 2>/dev/null || true
+            exit "$rc"
+          fi
           retry ./getdown tcga --project "${TCGA_PROJECT}" --out "_ci_out/tcga_${TCGA_PROJECT}" --provider gdc --timeout 40m
           retry ./getdown tcga --project "${TCGA_PROJECT}" --out "_ci_out/tcga_${TCGA_PROJECT}_xena" --provider xena --timeout 40m
 
@@ -64,6 +72,7 @@ jobs:
 
       - name: Upload outputs
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: getdown-e2e-outputs
           path: _ci_out
