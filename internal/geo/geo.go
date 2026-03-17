@@ -50,6 +50,7 @@ func Download(ctx context.Context, req Request) error {
 
 	c := httpx.New()
 	var platformFiles []string
+	var supReportPath string
 
 	seriesMatrixURL := seriesMatrixURL(gse)
 	seriesMatrixPath := filepath.Join(req.OutDir, "series_matrix.txt")
@@ -92,7 +93,8 @@ func Download(ctx context.Context, req Request) error {
 		if perr != nil {
 			return perr
 		}
-		needSup := req.Sup || info.TableRowCount == 0
+		autoSup := info.TableRowCount == 0
+		needSup := req.Sup || autoSup
 		supURLs := info.SupURLs
 		if needSup && len(supURLs) == 0 {
 			// Fall back to family SOFT to locate supplementary URLs when the series matrix has no data rows.
@@ -107,9 +109,11 @@ func Download(ctx context.Context, req Request) error {
 			}
 		}
 		if needSup {
-			if err := downloadSupplementary(ctx, c, supURLs, filepath.Join(req.OutDir, "supplementary")); err != nil {
+			report, err := downloadSupplementaryWithReport(ctx, c, supURLs, filepath.Join(req.OutDir, "supplementary"), autoSup)
+			if err != nil {
 				return err
 			}
+			supReportPath = report
 		}
 
 		// If this is array/chip data, also download platform annotation.
@@ -174,9 +178,11 @@ func Download(ctx context.Context, req Request) error {
 			return err
 		}
 		if req.Sup {
-			if err := downloadSupplementary(ctx, c, supURLs, filepath.Join(req.OutDir, "supplementary")); err != nil {
+			report, err := downloadSupplementaryWithReport(ctx, c, supURLs, filepath.Join(req.OutDir, "supplementary"), false)
+			if err != nil {
 				return err
 			}
+			supReportPath = report
 		}
 
 		platformIDs := extractGPLs(seriesMeta["Series_platform_id"])
@@ -202,10 +208,17 @@ func Download(ctx context.Context, req Request) error {
 			"series_matrix_url": seriesMatrixURL,
 		},
 	}
-	if len(platformFiles) > 0 {
-		m.Files = map[string]any{
-			"platform_files": platformFiles,
+	if supReportPath != "" {
+		if m.Files == nil {
+			m.Files = map[string]any{}
 		}
+		m.Files["supplementary_report"] = supReportPath
+	}
+	if len(platformFiles) > 0 {
+		if m.Files == nil {
+			m.Files = map[string]any{}
+		}
+		m.Files["platform_files"] = platformFiles
 	}
 	return meta.Write(filepath.Join(req.OutDir, "metadata.json"), m)
 }
@@ -520,6 +533,63 @@ func downloadSupplementary(ctx context.Context, c *httpx.Client, urls []string, 
 }
 
 var reGPL = regexp.MustCompile(`GPL[0-9]+`)
+
+func downloadSupplementaryWithReport(ctx context.Context, c *httpx.Client, urls []string, outDir string, strict bool) (reportPath string, err error) {
+	if len(urls) == 0 {
+		if strict {
+			return "", errors.New("geo: no supplementary URLs found for header-only series matrix")
+		}
+		return "", nil
+	}
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return "", err
+	}
+
+	type row struct {
+		URL    string
+		File   string
+		Status string
+		Error  string
+	}
+	var rows []row
+	okCount := 0
+
+	for _, u := range urls {
+		orig := strings.TrimSpace(u)
+		if orig == "" {
+			continue
+		}
+		u = strings.Replace(orig, "ftp://", "https://", 1)
+		name := safeLeaf(u)
+		if name == "" {
+			name = "supplementary.bin"
+		}
+		dest := filepath.Join(outDir, name)
+
+		if _, err := c.DownloadToFile(ctx, u, dest, false); err != nil {
+			rows = append(rows, row{URL: orig, File: dest, Status: "error", Error: err.Error()})
+			continue
+		}
+		okCount++
+		rows = append(rows, row{URL: orig, File: dest, Status: "ok", Error: ""})
+	}
+
+	reportPath = filepath.Join(outDir, "_report.tsv")
+	if f, rerr := os.Create(reportPath); rerr == nil {
+		w := bufio.NewWriterSize(f, 1<<20)
+		_, _ = w.WriteString("url\tfile\tstatus\terror\n")
+		for _, r := range rows {
+			_, _ = w.WriteString(r.URL + "\t" + r.File + "\t" + r.Status + "\t" + strings.ReplaceAll(r.Error, "\n", " ") + "\n")
+		}
+		_ = w.Flush()
+		_ = f.Close()
+	}
+
+	if strict && okCount == 0 {
+		return reportPath, fmt.Errorf("geo: header-only series matrix: supplementary download failed (see %s)", reportPath)
+	}
+	return reportPath, nil
+}
 
 func extractGPLs(values []string) []string {
 	var out []string

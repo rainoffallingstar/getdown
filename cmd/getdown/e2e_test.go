@@ -98,12 +98,15 @@ func TestE2E_GEO_LocalServer(t *testing.T) {
 				t.Fatalf("expression.tsv missing row")
 			}
 
-			if _, err := os.Stat(filepath.Join(outDir, "supplementary", supName)); err != nil {
-				t.Fatalf("supplementary missing: %v", err)
-			}
+				if _, err := os.Stat(filepath.Join(outDir, "supplementary", supName)); err != nil {
+					t.Fatalf("supplementary missing: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(outDir, "supplementary", "_report.tsv")); err != nil {
+					t.Fatalf("supplementary report missing: %v", err)
+				}
+			})
 		})
-	})
-}
+	}
 
 func TestE2E_GEO_HeaderOnly_FallsBackToSup_And_DownloadsGPLAnnot(t *testing.T) {
 	seriesMatrix := strings.Join([]string{
@@ -150,13 +153,16 @@ func TestE2E_GEO_HeaderOnly_FallsBackToSup_And_DownloadsGPLAnnot(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("exit code=%d", code)
 			}
-			if _, err := os.Stat(filepath.Join(outDir, "supplementary", supName)); err != nil {
-				t.Fatalf("supplementary missing: %v", err)
-			}
-			if _, err := os.Stat(filepath.Join(outDir, "platform", "GPL123.annot.gz")); err != nil {
-				t.Fatalf("platform annotation missing: %v", err)
-			}
-		})
+				if _, err := os.Stat(filepath.Join(outDir, "supplementary", supName)); err != nil {
+					t.Fatalf("supplementary missing: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(outDir, "supplementary", "_report.tsv")); err != nil {
+					t.Fatalf("supplementary report missing: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(outDir, "platform", "GPL123.annot.gz")); err != nil {
+					t.Fatalf("platform annotation missing: %v", err)
+				}
+			})
 	})
 }
 
