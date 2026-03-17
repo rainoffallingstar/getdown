@@ -25,6 +25,13 @@ type Request struct {
 }
 
 func Download(ctx context.Context, req Request) error {
+	req.Project = strings.ToUpper(strings.TrimSpace(req.Project))
+	if req.Project == "" {
+		return errors.New("tcga: missing Project")
+	}
+	if !strings.HasPrefix(req.Project, "TCGA-") {
+		return fmt.Errorf("tcga: invalid Project: %q (want TCGA-*)", req.Project)
+	}
 	if err := os.MkdirAll(req.OutDir, 0o755); err != nil {
 		return err
 	}

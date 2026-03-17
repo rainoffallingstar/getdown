@@ -55,6 +55,7 @@ jobs:
           }
 
           retry ./getdown geo  --gse "${GSE}" --out "_ci_out/geo_${GSE}" --timeout 20m
+          retry ./getdown geo  --gse "gse235527" --out "_ci_out/geo_GSE235527" --timeout 40m
           retry ./getdown tcga --project "${TCGA_PROJECT}" --out "_ci_out/tcga_${TCGA_PROJECT}" --provider gdc --timeout 40m
           retry ./getdown tcga --project "${TCGA_PROJECT}" --out "_ci_out/tcga_${TCGA_PROJECT}_xena" --provider xena --timeout 40m
 
