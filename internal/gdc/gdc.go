@@ -371,6 +371,21 @@ func parseCounts(r io.Reader) ([]string, []int32, error) {
 
 	var genes []string
 	var counts []int32
+	headerParsed := false
+	geneCol := 0
+	countCol := -1
+
+	findCol := func(cols []string, wants ...string) int {
+		for i := range cols {
+			c := strings.ToLower(strings.TrimSpace(cols[i]))
+			for _, w := range wants {
+				if c == strings.ToLower(w) {
+					return i
+				}
+			}
+		}
+		return -1
+	}
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
@@ -383,7 +398,26 @@ func parseCounts(r io.Reader) ([]string, []int32, error) {
 		if len(parts) < 2 {
 			continue
 		}
+
+		// STAR-style files can include a header like:
+		// gene_id  gene_name  unstranded  stranded_first  stranded_second  ...
+		// Prefer "unstranded" counts when present.
+		if !headerParsed {
+			if findCol(parts, "gene_id", "geneid") >= 0 {
+				headerParsed = true
+				geneCol = findCol(parts, "gene_id", "geneid")
+				countCol = findCol(parts, "unstranded", "count", "counts")
+				if countCol < 0 && len(parts) > 1 {
+					countCol = 1
+				}
+				continue
+			}
+		}
+
 		geneID := parts[0]
+		if geneCol >= 0 && geneCol < len(parts) {
+			geneID = parts[geneCol]
+		}
 		if geneID == "" {
 			continue
 		}
@@ -391,15 +425,34 @@ func parseCounts(r io.Reader) ([]string, []int32, error) {
 		if strings.HasPrefix(geneID, "__") {
 			continue
 		}
-		n, err := strconv.ParseInt(parts[1], 10, 32)
-		if err != nil {
-			// Some formats have "gene_name\tgene_id\tcount". Try last column.
-			last := parts[len(parts)-1]
-			n2, err2 := strconv.ParseInt(last, 10, 32)
-			if err2 != nil {
-				return nil, nil, err
+		// Skip header-like rows even when no header was parsed.
+		if strings.EqualFold(geneID, "gene_id") || strings.EqualFold(geneID, "geneid") {
+			continue
+		}
+
+		countStr := ""
+		if countCol >= 0 && countCol < len(parts) {
+			countStr = parts[countCol]
+		} else if len(parts) == 2 {
+			countStr = parts[1]
+		} else {
+			// Some formats have "gene_name\tgene_id\tcount". Prefer last column.
+			countStr = parts[len(parts)-1]
+			// But if parts[1] looks like an Ensembl id, treat it as gene_id and keep last as count.
+			if strings.HasPrefix(parts[1], "ENS") && !strings.HasPrefix(parts[0], "ENS") {
+				geneID = parts[1]
 			}
-			n = n2
+		}
+
+		n, err := strconv.ParseInt(strings.TrimSpace(countStr), 10, 32)
+		if err != nil {
+			// Header row sometimes leaks through when countCol isn't found (e.g. "gene_name").
+			// Treat non-ENSEMBL rows as non-fatal and keep scanning, but fail fast for
+			// actual gene rows (otherwise we'd silently drop data).
+			if strings.HasPrefix(geneID, "ENS") {
+				return nil, nil, fmt.Errorf("parse count for %s: %w (value=%q)", geneID, err, countStr)
+			}
+			continue
 		}
 		genes = append(genes, geneID)
 		counts = append(counts, int32(n))
