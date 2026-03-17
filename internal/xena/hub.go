@@ -258,53 +258,8 @@ func (c *hubClient) listProbemapNames(ctx context.Context, probemap string) ([]s
 	return out, nil
 }
 
-type maybeFloat struct {
-	V *float64
-}
-
-func (m *maybeFloat) UnmarshalJSON(b []byte) error {
-	s := strings.TrimSpace(string(b))
-	if s == "" || s == "null" {
-		m.V = nil
-		return nil
-	}
-	// JSON number
-	if s[0] != '"' {
-		f, err := strconv.ParseFloat(s, 64)
-		if err != nil {
-			m.V = nil
-			return nil
-		}
-		m.V = &f
-		return nil
-	}
-	// JSON string
-	var str string
-	if err := json.Unmarshal(b, &str); err != nil {
-		m.V = nil
-		return nil
-	}
-	str = strings.TrimSpace(str)
-	if str == "" {
-		m.V = nil
-		return nil
-	}
-	l := strings.ToLower(str)
-	if l == "na" || l == "nan" || l == "inf" || l == "+inf" || l == "-inf" {
-		m.V = nil
-		return nil
-	}
-	f, err := strconv.ParseFloat(str, 64)
-	if err != nil {
-		m.V = nil
-		return nil
-	}
-	m.V = &f
-	return nil
-}
-
 func (c *hubClient) fetchFloatMatrix(ctx context.Context, dataset string, samples []string, probes []string) ([][]*float64, error) {
-	var out [][]maybeFloat
+	var out [][]json.RawMessage
 	edn := ednCall(fnDatasetFetch, ednString(dataset), ednVecStrings(samples), ednVecStrings(probes))
 	if err := c.postEDN(ctx, edn, &out); err != nil {
 		return nil, err
@@ -317,11 +272,44 @@ func (c *hubClient) fetchFloatMatrix(ctx context.Context, dataset string, sample
 		row := out[i]
 		r := make([]*float64, len(row))
 		for j := range row {
-			r[j] = row[j].V
+			r[j] = parseFloatPtr(row[j])
 		}
 		conv[i] = r
 	}
 	return conv, nil
+}
+
+func parseFloatPtr(b json.RawMessage) *float64 {
+	s := strings.TrimSpace(string(b))
+	if s == "" || s == "null" {
+		return nil
+	}
+	// number
+	if s[0] != '"' {
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return nil
+		}
+		return &f
+	}
+	// string
+	var str string
+	if err := json.Unmarshal(b, &str); err != nil {
+		return nil
+	}
+	str = strings.TrimSpace(str)
+	if str == "" {
+		return nil
+	}
+	l := strings.ToLower(str)
+	if l == "na" || l == "nan" || l == "inf" || l == "+inf" || l == "-inf" {
+		return nil
+	}
+	f, err := strconv.ParseFloat(str, 64)
+	if err != nil {
+		return nil
+	}
+	return &f
 }
 
 func (c *hubClient) fetchAnyMatrix(ctx context.Context, dataset string, samples []string, fields []string) ([][]any, error) {
