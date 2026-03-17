@@ -514,11 +514,10 @@ func downloadSupplementary(ctx context.Context, c *httpx.Client, urls []string, 
 		return err
 	}
 	for _, u := range urls {
-		u = strings.TrimSpace(u)
+		u = cleanSupplementaryURL(strings.TrimSpace(u))
 		if u == "" {
 			continue
 		}
-		u = strings.Replace(u, "ftp://", "https://", 1)
 		name := safeLeaf(u)
 		if name == "" {
 			name = "supplementary.bin"
@@ -534,6 +533,18 @@ func downloadSupplementary(ctx context.Context, c *httpx.Client, urls []string, 
 }
 
 var reGPL = regexp.MustCompile(`GPL[0-9]+`)
+
+func cleanSupplementaryURL(u string) string {
+	u = strings.TrimSpace(u)
+	// GEO sometimes wraps URLs in quotes.
+	u = strings.Trim(u, "\"'")
+	u = strings.TrimSpace(u)
+	// Normalize ftp links to https for CI environments.
+	if strings.HasPrefix(u, "ftp://") {
+		u = "https://" + strings.TrimPrefix(u, "ftp://")
+	}
+	return u
+}
 
 func downloadSupplementaryWithReport(ctx context.Context, c *httpx.Client, urls []string, outDir string, strict bool) (reportPath string, err error) {
 	if len(urls) == 0 {
@@ -562,7 +573,10 @@ func downloadSupplementaryWithReport(ctx context.Context, c *httpx.Client, urls 
 		if orig == "" {
 			continue
 		}
-		u = strings.Replace(orig, "ftp://", "https://", 1)
+		u = cleanSupplementaryURL(orig)
+		if u == "" {
+			continue
+		}
 		name := safeLeaf(u)
 		if name == "" {
 			name = "supplementary.bin"
@@ -672,6 +686,8 @@ func downloadPlatformAnnotation(ctx context.Context, c *httpx.Client, gpl string
 }
 
 func safeLeaf(u string) string {
+	u = strings.TrimSpace(u)
+	u = strings.Trim(u, "\"'")
 	u = strings.TrimSuffix(u, "/")
 	i := strings.LastIndex(u, "/")
 	if i >= 0 && i+1 < len(u) {

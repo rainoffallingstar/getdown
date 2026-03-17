@@ -62,3 +62,12 @@ func TestParseSeriesMatrixWritesFiles(t *testing.T) {
 		t.Fatalf("sample_kv.tsv missing: %v", err)
 	}
 }
+
+func TestCleanSupplementaryURL_StripsQuotesAndNormalizesFTP(t *testing.T) {
+	in := `"ftp://ftp.ncbi.nlm.nih.gov/geo/series/GSE235nnn/GSE235527/suppl/GSE235527_RAW.tar"`
+	got := cleanSupplementaryURL(in)
+	want := "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE235nnn/GSE235527/suppl/GSE235527_RAW.tar"
+	if got != want {
+		t.Fatalf("cleanSupplementaryURL: got %q want %q", got, want)
+	}
+}
