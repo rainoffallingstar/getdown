@@ -1,0 +1,69 @@
+name: e2e-download
+
+on:
+  workflow_dispatch:
+    inputs:
+      gse:
+        description: "GEO GSE accession (small preferred)"
+        required: false
+        default: "GSE10072"
+      tcga_project:
+        description: "TCGA project id"
+        required: false
+        default: "TCGA-CHOL"
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test (offline e2e + unit)
+        run: go test ./...
+
+      - name: Build
+        run: go build ./cmd/getdown
+
+      - name: Download GEO + TCGA
+        env:
+          GSE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.gse || 'GSE10072' }}
+          TCGA_PROJECT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tcga_project || 'TCGA-CHOL' }}
+        run: |
+          set -euo pipefail
+          rm -rf _ci_out
+          mkdir -p _ci_out
+
+          retry() {
+            local n=0
+            until [ "$n" -ge 3 ]; do
+              "$@" && return 0
+              n=$((n+1))
+              sleep 10
+            done
+            return 1
+          }
+
+          retry ./getdown geo  --gse "${GSE}" --out "_ci_out/geo_${GSE}" --timeout 20m
+          retry ./getdown tcga --project "${TCGA_PROJECT}" --out "_ci_out/tcga_${TCGA_PROJECT}" --provider gdc --timeout 40m
+          retry ./getdown tcga --project "${TCGA_PROJECT}" --out "_ci_out/tcga_${TCGA_PROJECT}_xena" --provider xena --timeout 40m
+
+          echo "== outputs =="
+          find _ci_out -maxdepth 3 -type f -print | sed -n '1,200p'
+
+      - name: Upload outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: getdown-e2e-outputs
+          path: _ci_out
+          if-no-files-found: error

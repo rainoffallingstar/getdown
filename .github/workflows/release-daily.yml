@@ -1,0 +1,76 @@
+name: release-daily
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Compute tag (Asia/Shanghai)
+        id: tag
+        run: |
+          set -euo pipefail
+          TAG="$(TZ=Asia/Shanghai date +%Y%m%d)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Force-update tag to this commit
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git tag -f "${TAG}"
+          git push -f origin "${TAG}"
+
+      - name: Build release assets
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist
+
+          build() {
+            local goos="$1"
+            local goarch="$2"
+            local ext="$3"
+            local out="getdown_${TAG}_${goos}_${goarch}${ext}"
+            GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "-s -w" -o "dist/$out" ./cmd/getdown
+          }
+
+          build linux amd64 ""
+          build linux arm64 ""
+          build darwin amd64 ""
+          build darwin arm64 ""
+          build windows amd64 ".exe"
+
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+
+      - name: Create/Update GitHub release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          allowUpdates: true
+          replacesArtifacts: true
+          artifacts: "dist/*"
+          artifactErrorsFailBuild: true
