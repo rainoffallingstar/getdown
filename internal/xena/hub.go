@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -341,6 +342,7 @@ type hubDownloadAllResult struct {
 	DatasetFiles  map[string]string // dataset name -> output file path
 	ExpressionTSV string            // outDir/expression.tsv (best-effort link/copy)
 	ClinicalTSV   string            // outDir/clinical.tsv (best-effort link/copy)
+	SkippedTSV    string            // outDir/omics/_skipped.tsv (optional)
 
 	ExpressionDataset string
 	ClinicalDataset   string
@@ -789,11 +791,60 @@ func downloadTCGAAllFromHub(ctx context.Context, project, outDir string) (hubDow
 	}
 
 	files := make(map[string]string, len(datasets))
+	skipped := make(map[string]string)
+
+	// Require expression to succeed.
+	if exprDataset == "" {
+		return hubDownloadAllResult{}, fmt.Errorf("xena hub: no preferred expression dataset for project: %s", project)
+	}
+	var exprMeta datasetMeta
+	for _, d := range datasets {
+		if d.Name == exprDataset {
+			exprMeta = d
+			break
+		}
+	}
+	if exprMeta.Name == "" {
+		// fallback
+		exprMeta = datasetMeta{Name: exprDataset, Type: "genomicMatrix"}
+	}
+	if exprMeta.Status != "" && exprMeta.Status != "loaded" {
+		return hubDownloadAllResult{}, fmt.Errorf("xena hub: expression dataset not loaded: %s (status=%s)", exprDataset, exprMeta.Status)
+	}
+	if exprMeta.Probemap == "" {
+		meta, err := c.getDatasetMeta(ctx, exprDataset)
+		if err != nil {
+			return hubDownloadAllResult{}, err
+		}
+		exprMeta.Probemap = meta.Probemap
+	}
+	if exprMeta.Probemap == "" {
+		return hubDownloadAllResult{}, fmt.Errorf("xena hub: missing probemap for expression dataset: %s", exprDataset)
+	}
+	exprPath := filepath.Join(omicsDir, datasetOutName(exprDataset))
+	if _, _, err := downloadMatrixDataset(ctx, c, exprDataset, exprMeta.Probemap, exprPath); err != nil {
+		return hubDownloadAllResult{}, err
+	}
+	files[exprDataset] = exprPath
+
+	// Best-effort clinical.
+	if clinDataset != "" {
+		clinPath := filepath.Join(omicsDir, datasetOutName(clinDataset))
+		if _, err := downloadClinicalDataset(ctx, c, clinDataset, exprSamples, clinPath); err == nil {
+			files[clinDataset] = clinPath
+		} else {
+			skipped[clinDataset] = err.Error()
+		}
+	}
+
 	for _, d := range datasets {
 		if d.Name == "" {
 			continue
 		}
 		if d.Status != "" && d.Status != "loaded" {
+			continue
+		}
+		if _, already := files[d.Name]; already {
 			continue
 		}
 		outPath := filepath.Join(omicsDir, datasetOutName(d.Name))
@@ -802,28 +853,52 @@ func downloadTCGAAllFromHub(ctx context.Context, project, outDir string) (hubDow
 			if d.Probemap == "" {
 				// Try to look it up via metadata (some hubs omit probemap in query output).
 				meta, err := c.getDatasetMeta(ctx, d.Name)
-				if err != nil {
-					return hubDownloadAllResult{}, err
+				if err == nil {
+					d.Probemap = meta.Probemap
 				}
-				d.Probemap = meta.Probemap
 			}
 			if d.Probemap == "" {
-				return hubDownloadAllResult{}, fmt.Errorf("xena hub: missing probemap for genomicMatrix dataset: %s", d.Name)
+				skipped[d.Name] = "missing probemap"
+				continue
 			}
 			if _, _, err := downloadMatrixDataset(ctx, c, d.Name, d.Probemap, outPath); err != nil {
-				return hubDownloadAllResult{}, err
+				skipped[d.Name] = err.Error()
+				continue
 			}
 			files[d.Name] = outPath
 		case "clinicalMatrix":
 			if _, err := downloadClinicalDataset(ctx, c, d.Name, exprSamples, outPath); err != nil {
-				return hubDownloadAllResult{}, err
+				skipped[d.Name] = err.Error()
+				continue
 			}
 			files[d.Name] = outPath
 		default:
 			if _, err := downloadQueryDataset(ctx, c, d.Name, outPath); err != nil {
-				return hubDownloadAllResult{}, err
+				skipped[d.Name] = err.Error()
+				continue
 			}
 			files[d.Name] = outPath
+		}
+	}
+
+	skippedPath := ""
+	if len(skipped) > 0 {
+		skippedPath = filepath.Join(omicsDir, "_skipped.tsv")
+		f, err := os.Create(skippedPath)
+		if err == nil {
+			w := bufio.NewWriterSize(f, 1<<20)
+			_, _ = w.WriteString("dataset\treason\n")
+			names := make([]string, 0, len(skipped))
+			for k := range skipped {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+			for _, k := range names {
+				_, _ = w.WriteString(k + "\t" + strings.ReplaceAll(skipped[k], "\n", " ") + "\n")
+			}
+			_ = w.Flush()
+			_ = f.Close()
+			files["__skipped__"] = skippedPath
 		}
 	}
 
@@ -846,6 +921,7 @@ func downloadTCGAAllFromHub(ctx context.Context, project, outDir string) (hubDow
 		DatasetFiles:       files,
 		ExpressionTSV:      exprTSV,
 		ClinicalTSV:        clinTSV,
+		SkippedTSV:         skippedPath,
 		ExpressionDataset:  exprDataset,
 		ClinicalDataset:    clinDataset,
 	}, nil

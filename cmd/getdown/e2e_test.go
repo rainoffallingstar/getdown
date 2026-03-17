@@ -172,12 +172,13 @@ func TestE2E_TCGA_Xena_DownloadsAllOmics_LocalServer(t *testing.T) {
 			b, _ := io.ReadAll(r.Body)
 			body := string(b)
 			switch {
-			case strings.Contains(body, ":from [:dataset]") && strings.Contains(body, `:like :name "TCGA-FAKE.%`):
-				return resp(200, map[string]string{"Content-Type": "application/json"}, []byte(`[`+
-					`{"name":"`+project+`.star_counts.tsv","type":"genomicMatrix","probemap":"pm1","status":"loaded"},`+
-					`{"name":"`+project+`.clinical.tsv","type":"clinicalMatrix","probemap":"","status":"loaded"},`+
-					`{"name":"`+project+`.somaticmutation_wxs.tsv","type":"mutationVector","probemap":"","status":"loaded"}`+
-					`]`), r), nil
+				case strings.Contains(body, ":from [:dataset]") && strings.Contains(body, `:like :name "TCGA-FAKE.%`):
+					return resp(200, map[string]string{"Content-Type": "application/json"}, []byte(`[`+
+						`{"name":"`+project+`.star_counts.tsv","type":"genomicMatrix","probemap":"pm1","status":"loaded"},`+
+						`{"name":"`+project+`.clinical.tsv","type":"clinicalMatrix","probemap":"","status":"loaded"},`+
+						`{"name":"`+project+`.mirna.tsv","type":"genomicMatrix","probemap":null,"status":"loaded"},`+
+						`{"name":"`+project+`.somaticmutation_wxs.tsv","type":"mutationVector","probemap":"","status":"loaded"}`+
+						`]`), r), nil
 			case strings.Contains(body, `:field.name "sampleID"`) && strings.Contains(body, project+`.star_counts.tsv`):
 				return resp(200, map[string]string{"Content-Type": "application/json"}, []byte(`["S1","S2"]`), r), nil
 			case strings.Contains(body, "fn [probemap limit offset]") && strings.Contains(body, "pm1"):
@@ -232,12 +233,15 @@ func TestE2E_TCGA_Xena_DownloadsAllOmics_LocalServer(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(outDir, "omics", project+".clinical.tsv")); err != nil {
 			t.Fatalf("omics clinical missing: %v", err)
 		}
-		if _, err := os.Stat(filepath.Join(outDir, "omics", project+".somaticmutation_wxs.tsv")); err != nil {
-			t.Fatalf("omics mutation missing: %v", err)
-		}
+			if _, err := os.Stat(filepath.Join(outDir, "omics", project+".somaticmutation_wxs.tsv")); err != nil {
+				t.Fatalf("omics mutation missing: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(outDir, "omics", "_skipped.tsv")); err != nil {
+				t.Fatalf("omics skipped report missing: %v", err)
+			}
+			})
 		})
-	})
-}
+	}
 
 func TestE2E_TCGA_GDCOnly_LocalServer(t *testing.T) {
 	project := "TCGA-OK"
