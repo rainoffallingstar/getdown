@@ -11,6 +11,10 @@ on:
         description: "SRA accession for search e2e"
         required: false
         default: "SRR390728"
+      sra_download_accession:
+        description: "SRA accession for download e2e (small preferred)"
+        required: false
+        default: "SRR000001"
       tcga_project:
         description: "TCGA project id"
         required: false
@@ -43,6 +47,7 @@ jobs:
         env:
           GSE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.gse || 'GSE10072' }}
           SRA_ACCESSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sra_accession || 'SRR390728' }}
+          SRA_DOWNLOAD_ACCESSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sra_download_accession || 'SRR000001' }}
           TCGA_PROJECT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tcga_project || 'TCGA-CHOL' }}
         run: |
           set -euo pipefail
@@ -75,6 +80,10 @@ jobs:
           search_and_check "search_all_${TCGA_PROJECT}" "tcga" --source all "${TCGA_PROJECT}"
           grep -q "\"source\": \"xena\"" "_ci_out/search_all_${TCGA_PROJECT}.json"
 
+          retry ./getdown sra  --accession "${SRA_DOWNLOAD_ACCESSION}" --kind sra --out "_ci_out/sra_${SRA_DOWNLOAD_ACCESSION}" --timeout 40m
+          test -s "_ci_out/sra_${SRA_DOWNLOAD_ACCESSION}/runinfo.tsv"
+          test -s "_ci_out/sra_${SRA_DOWNLOAD_ACCESSION}/links.tsv"
+          test -s "_ci_out/sra_${SRA_DOWNLOAD_ACCESSION}/metadata.json"
           retry ./getdown geo  --gse "${GSE}" --out "_ci_out/geo_${GSE}" --timeout 20m
           set +e
           retry ./getdown geo  --gse "gse235527" --out "_ci_out/geo_GSE235527" --timeout 90m
