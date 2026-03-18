@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
 	"testing"
 
 	"getdown/internal/httpx"
@@ -39,6 +40,22 @@ func withStubTransport(t *testing.T, rt http.RoundTripper, fn func()) {
 	fn()
 }
 
+func withEnv(t *testing.T, key, value string, fn func()) {
+	t.Helper()
+	old, had := os.LookupEnv(key)
+	if err := os.Setenv(key, value); err != nil {
+		t.Fatalf("setenv %s: %v", key, err)
+	}
+	defer func() {
+		if !had {
+			_ = os.Unsetenv(key)
+		} else {
+			_ = os.Setenv(key, old)
+		}
+	}()
+	fn()
+}
+
 func TestListDatasetsByPrefix_AllowsNullFields(t *testing.T) {
 	withStubTransport(t, stubTransport{roundTrip: func(r *http.Request) (*http.Response, error) {
 		// hubClient always posts to /data/
@@ -67,3 +84,26 @@ func TestListDatasetsByPrefix_AllowsNullFields(t *testing.T) {
 	})
 }
 
+func TestSearchDatasets_IncludesLongTitle(t *testing.T) {
+	withEnv(t, "GETDOWN_XENA_HUB", "https://xena.test", func() {
+		withStubTransport(t, stubTransport{roundTrip: func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/data/" || r.Method != http.MethodPost {
+				return resp(404, nil, []byte("not found"), r), nil
+			}
+			return resp(200, map[string]string{"Content-Type": "application/json"}, []byte(`[
+  {"name":"TCGA-LAML.star_counts.tsv","longtitle":"Acute Myeloid Leukemia STAR counts","type":"genomicMatrix","probemap":"pm1","status":"loaded"}
+]`), r), nil
+		}}, func() {
+			ds, err := SearchDatasets(context.Background(), "leukemia", 10)
+			if err != nil {
+				t.Fatalf("SearchDatasets: %v", err)
+			}
+			if len(ds) != 1 {
+				t.Fatalf("datasets len: got %d want 1", len(ds))
+			}
+			if ds[0].LongTitle != "Acute Myeloid Leukemia STAR counts" {
+				t.Fatalf("unexpected long title: %+v", ds[0])
+			}
+		})
+	})
+}

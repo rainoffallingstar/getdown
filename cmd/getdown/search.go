@@ -26,13 +26,13 @@ func runSearch(ctx context.Context, args []string) int {
 	var listXenaDatasets bool
 	var q string
 
-	fs.StringVar(&source, "source", "all", "all|geo|tcga")
+	fs.StringVar(&source, "source", "all", "all|geo|sra|tcga|xena")
 	fs.IntVar(&limit, "limit", 20, "max results per source for keyword search")
 	fs.DurationVar(&timeout, "timeout", 2*time.Minute, "overall timeout")
 	fs.BoolVar(&jsonOut, "json", false, "output JSON (default: TSV)")
 	fs.BoolVar(&noHeader, "no-header", false, "disable TSV header row")
-	fs.BoolVar(&includeXena, "xena", true, "when querying TCGA projects, also query Xena hub datasets")
-	fs.BoolVar(&listXenaDatasets, "datasets", false, "list Xena dataset names (only for TCGA project lookups)")
+	fs.BoolVar(&includeXena, "xena", true, "include Xena as an independent search source")
+	fs.BoolVar(&listXenaDatasets, "datasets", false, "list individual Xena datasets for TCGA project lookups")
 	fs.StringVar(&q, "q", "", "query string (allows spaces); if set, positional args are ignored")
 
 	if err := fs.Parse(args); err != nil {
@@ -52,20 +52,35 @@ func runSearch(ctx context.Context, args []string) int {
 
 	opt := search.Options{
 		Geo:              true,
+		SRA:              true,
 		TCGA:             true,
-		Limit:            limit,
 		Xena:             includeXena,
+		Limit:            limit,
 		ListXenaDatasets: listXenaDatasets,
 	}
 	switch strings.ToLower(strings.TrimSpace(source)) {
 	case "all", "":
 		// keep defaults
 	case "geo":
+		opt.SRA = false
 		opt.TCGA = false
+		opt.Xena = false
+	case "sra":
+		opt.Geo = false
+		opt.SRA = true
+		opt.TCGA = false
+		opt.Xena = false
 	case "tcga":
 		opt.Geo = false
+		opt.SRA = false
+		opt.Xena = false
+	case "xena":
+		opt.Geo = false
+		opt.SRA = false
+		opt.TCGA = false
+		opt.Xena = true
 	default:
-		fmt.Fprintf(os.Stderr, "search: invalid --source: %q (want all|geo|tcga)\n", source)
+		fmt.Fprintf(os.Stderr, "search: invalid --source: %q (want all|geo|sra|tcga|xena)\n", source)
 		return 2
 	}
 

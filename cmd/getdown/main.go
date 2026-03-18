@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"getdown/internal/geo"
+	"getdown/internal/sra"
 	"getdown/internal/tcga"
 )
 
@@ -30,6 +31,8 @@ func run() int {
 		return runTCGA(ctx, os.Args[2:])
 	case "geo":
 		return runGEO(ctx, os.Args[2:])
+	case "sra":
+		return runSRA(ctx, os.Args[2:])
 	case "search":
 		return runSearch(ctx, os.Args[2:])
 	case "-h", "--help", "help":
@@ -48,7 +51,8 @@ func usage() {
 Usage:
   getdown tcga --project TCGA-LAML --out ./out [--provider xena|auto|gdc]
   getdown geo  --gse GSE13535     --out ./out [--sup]
-  getdown search [--source all|geo|tcga] [--limit 20] <query...>
+  getdown sra  --accession SRR12345 --out ./out [--kind auto|fastq|submitted|sra|all]
+  getdown search [--source all|geo|sra|tcga|xena] [--limit 20] <query...>
 
 `)
 }
@@ -140,6 +144,46 @@ func runGEO(ctx context.Context, args []string) int {
 			return 1
 		}
 		fmt.Fprintf(os.Stderr, "geo: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func runSRA(ctx context.Context, args []string) int {
+	fs := flag.NewFlagSet("sra", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	var accession string
+	var outDir string
+	var timeout time.Duration
+	var kind string
+
+	fs.StringVar(&accession, "accession", "", "SRA accession, e.g. SRR12345 or SRP12345")
+	fs.StringVar(&outDir, "out", "", "output directory")
+	fs.StringVar(&kind, "kind", "auto", "download kind: auto|fastq|submitted|sra|all")
+	fs.DurationVar(&timeout, "timeout", 2*time.Hour, "overall timeout")
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if accession == "" || outDir == "" {
+		fs.Usage()
+		return 2
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	if _, err := sra.Download(ctx, sra.Request{
+		Accession: accession,
+		OutDir:    outDir,
+		Kind:      kind,
+	}); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintf(os.Stderr, "sra: timed out: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "sra: %v\n", err)
 		return 1
 	}
 	return 0

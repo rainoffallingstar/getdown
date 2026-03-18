@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"getdown/internal/httpx"
+	"getdown/internal/sra"
 	"getdown/internal/xena"
 )
 
@@ -25,9 +26,10 @@ type Result struct {
 
 type Options struct {
 	Geo              bool
+	SRA              bool
 	TCGA             bool
-	Limit            int
 	Xena             bool
+	Limit            int
 	ListXenaDatasets bool
 }
 
@@ -45,8 +47,8 @@ func Search(ctx context.Context, query string, opt Options) ([]Result, error) {
 	if opt.Limit <= 0 {
 		opt.Limit = 20
 	}
-	if !opt.Geo && !opt.TCGA {
-		return nil, errors.New("search: no sources enabled (set Geo and/or TCGA)")
+	if !opt.Geo && !opt.SRA && !opt.TCGA && !opt.Xena {
+		return nil, errors.New("search: no sources enabled (set Geo and/or SRA and/or TCGA and/or Xena)")
 	}
 
 	// Accession lookup mode.
@@ -66,10 +68,16 @@ func Search(ctx context.Context, query string, opt Options) ([]Result, error) {
 		}}, nil
 	}
 	if reTCGA.MatchString(query) {
-		if !opt.TCGA {
-			return nil, fmt.Errorf("search: TCGA disabled for query: %s", query)
+		if !opt.TCGA && !opt.Xena {
+			return nil, fmt.Errorf("search: TCGA and Xena disabled for query: %s", query)
 		}
-		return tcgaLookupProject(ctx, strings.ToUpper(query), opt)
+		return tcgaProjectSearch(ctx, strings.ToUpper(query), opt)
+	}
+	if sra.IsAccession(query) {
+		if !opt.SRA {
+			return nil, fmt.Errorf("search: SRA disabled for query: %s", query)
+		}
+		return sraLookup(ctx, strings.ToUpper(query))
 	}
 
 	// Keyword search mode.
@@ -83,8 +91,24 @@ func Search(ctx context.Context, query string, opt Options) ([]Result, error) {
 			out = append(out, rs...)
 		}
 	}
+	if opt.SRA {
+		rs, err := sraSearchKeyword(ctx, query, opt.Limit)
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			out = append(out, rs...)
+		}
+	}
 	if opt.TCGA {
 		rs, err := tcgaSearchKeyword(ctx, query, opt.Limit)
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			out = append(out, rs...)
+		}
+	}
+	if opt.Xena {
+		rs, err := xenaSearchKeyword(ctx, query, opt.Limit)
 		if err != nil {
 			errs = append(errs, err)
 		} else {
@@ -283,7 +307,40 @@ type gdcProjectListResp struct {
 	} `json:"data"`
 }
 
-func tcgaLookupProject(ctx context.Context, projectID string, opt Options) ([]Result, error) {
+func tcgaProjectSearch(ctx context.Context, projectID string, opt Options) ([]Result, error) {
+	var out []Result
+	var errs []error
+
+	if opt.TCGA {
+		rs, err := tcgaLookupProject(ctx, projectID)
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			out = append(out, rs...)
+		}
+	}
+	if opt.Xena {
+		rs, err := xenaLookupProject(ctx, projectID, opt.ListXenaDatasets)
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			out = append(out, rs...)
+		}
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Source != out[j].Source {
+			return out[i].Source < out[j].Source
+		}
+		return out[i].ID < out[j].ID
+	})
+	if len(errs) > 0 {
+		return out, errors.Join(errs...)
+	}
+	return out, nil
+}
+
+func tcgaLookupProject(ctx context.Context, projectID string) ([]Result, error) {
 	v := url.Values{}
 	v.Set("fields", "project_id,name,primary_site,disease_type")
 	v.Set("format", "JSON")
@@ -309,41 +366,13 @@ func tcgaLookupProject(ctx context.Context, projectID string, opt Options) ([]Re
 		extraParts = append(extraParts, "primary_site="+strings.Join(got.Data.PrimarySite, "|"))
 	}
 
-	var datasets []string
-	var xenaErr error
-	if opt.Xena {
-		datasets, xenaErr = xena.ListDatasetNamesByPrefix(ctx, projectID+".")
-		if xenaErr == nil {
-			extraParts = append(extraParts, fmt.Sprintf("xena_datasets=%d", len(datasets)))
-		} else {
-			extraParts = append(extraParts, "xena_error="+strings.ReplaceAll(xenaErr.Error(), "\t", " "))
-		}
-	}
-
-	out := []Result{{
+	return []Result{{
 		Source: "tcga",
 		ID:     got.Data.ProjectID,
 		Title:  got.Data.Name,
 		URL:    "https://portal.gdc.cancer.gov/projects/" + got.Data.ProjectID,
 		Extra:  strings.Join(extraParts, "\t"),
-	}}
-
-	if opt.ListXenaDatasets && len(datasets) > 0 {
-		sort.Strings(datasets)
-		for _, ds := range datasets {
-			out = append(out, Result{
-				Source: "xena",
-				ID:     ds,
-				Title:  "dataset",
-				URL:    "",
-			})
-		}
-	}
-
-	if xenaErr != nil {
-		return out, xenaErr
-	}
-	return out, nil
+	}}, nil
 }
 
 func tcgaSearchKeyword(ctx context.Context, term string, limit int) ([]Result, error) {
@@ -395,6 +424,124 @@ func tcgaSearchKeyword(ctx context.Context, term string, limit int) ([]Result, e
 		if len(out) >= limit {
 			break
 		}
+	}
+	return out, nil
+}
+
+func xenaLookupProject(ctx context.Context, projectID string, listDatasets bool) ([]Result, error) {
+	datasets, err := xena.ListDatasetsByPrefix(ctx, projectID+".")
+	if err != nil {
+		return nil, fmt.Errorf("xena project search: %w", err)
+	}
+	if len(datasets) == 0 {
+		return nil, fmt.Errorf("xena project search: not found: %s", projectID)
+	}
+
+	types := make(map[string]int)
+	for _, ds := range datasets {
+		if strings.TrimSpace(ds.Type) == "" {
+			types["unknown"]++
+			continue
+		}
+		types[ds.Type]++
+	}
+	var typeParts []string
+	for typ, n := range types {
+		typeParts = append(typeParts, fmt.Sprintf("%s=%d", typ, n))
+	}
+	sort.Strings(typeParts)
+
+	out := []Result{{
+		Source: "xena",
+		ID:     projectID,
+		Title:  "Xena datasets for " + projectID,
+		URL:    "",
+		Extra:  fmt.Sprintf("datasets=%d\t%s", len(datasets), strings.Join(typeParts, "\t")),
+	}}
+	if listDatasets {
+		for _, ds := range datasets {
+			title := strings.TrimSpace(ds.LongTitle)
+			if title == "" {
+				title = ds.Type
+			}
+			extra := "status=" + strings.TrimSpace(ds.Status)
+			if strings.TrimSpace(ds.Type) != "" {
+				extra += "\ttype=" + ds.Type
+			}
+			out = append(out, Result{
+				Source: "xena",
+				ID:     ds.Name,
+				Title:  title,
+				Extra:  extra,
+			})
+		}
+	}
+	return out, nil
+}
+
+func xenaSearchKeyword(ctx context.Context, term string, limit int) ([]Result, error) {
+	datasets, err := xena.SearchDatasets(ctx, term, limit)
+	if err != nil {
+		return nil, fmt.Errorf("xena keyword search: %w", err)
+	}
+	out := make([]Result, 0, len(datasets))
+	for _, ds := range datasets {
+		title := strings.TrimSpace(ds.LongTitle)
+		if title == "" {
+			title = ds.Type
+		}
+		extraParts := make([]string, 0, 3)
+		if strings.TrimSpace(ds.Type) != "" {
+			extraParts = append(extraParts, "type="+ds.Type)
+		}
+		if strings.TrimSpace(ds.Status) != "" {
+			extraParts = append(extraParts, "status="+ds.Status)
+		}
+		if strings.TrimSpace(ds.Probemap) != "" {
+			extraParts = append(extraParts, "probemap="+ds.Probemap)
+		}
+		out = append(out, Result{
+			Source: "xena",
+			ID:     ds.Name,
+			Title:  title,
+			Extra:  strings.Join(extraParts, "\t"),
+		})
+	}
+	return out, nil
+}
+
+func sraLookup(ctx context.Context, acc string) ([]Result, error) {
+	records, err := sra.LookupAccession(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Result, 0, len(records))
+	for _, rec := range records {
+		out = append(out, Result{
+			Source: "sra",
+			ID:     rec.Accession,
+			Title:  rec.Title,
+			URL:    "https://www.ncbi.nlm.nih.gov/sra/?term=" + url.QueryEscape(rec.Accession),
+			Extra:  rec.Extra,
+		})
+	}
+	return out, nil
+}
+
+func sraSearchKeyword(ctx context.Context, term string, limit int) ([]Result, error) {
+	records, err := sra.Search(ctx, term, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Result, 0, len(records))
+	for _, rec := range records {
+		out = append(out, Result{
+			Source: "sra",
+			ID:     rec.Accession,
+			Title:  rec.Title,
+			URL:    "https://www.ncbi.nlm.nih.gov/sra/?term=" + url.QueryEscape(rec.Accession),
+			Extra:  rec.Extra,
+		})
 	}
 	return out, nil
 }

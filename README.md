@@ -1,6 +1,7 @@
 # Getdown
 
 一个用 Go 写的“数据挖掘/下载”小工具：下载 **TCGA（优先 UCSC Xena hub，支持多组学；可选 GDC）** 和 **GEO（GSE series matrix；必要时自动回退 supplementary；芯片数据额外下载平台注释）**，并把结果落到本地 TSV 文件，方便后续在 R / Python 里继续分析。
+现在也支持 **SRA（SRR/SRP/... 检索；通过公开下载链接直接下载 run 文件）**。
 
 > 仓库里原来的 R 版本逻辑在 `moriaclass.R`。
 
@@ -59,21 +60,46 @@ go build ./cmd/getdown
 
 ### Search
 
-对输入的 `GSE...` / `TCGA-...` 进行快速检索（存在性 + 基本信息），或按关键词检索：
+对输入的 `GSE...` / `SRR/SRP/...` / `TCGA-...` 进行快速检索（存在性 + 基本信息），或按关键词同时检索 `GEO + SRA + GDC(TCGA) + Xena`：
 
 ```bash
 ./getdown search GSE235527
+./getdown search SRR123456
 ./getdown search TCGA-LAML
 ./getdown search leukemia
 ./getdown search --source geo alzheimer
+./getdown search --source sra leukemia
 ./getdown search --source tcga leukemia
+./getdown search --source xena leukemia
 ```
 
 说明：
 
 - `GSE...`：使用 NCBI E-utilities（`esearch/esummary`）查询 GEO 信息。
-- `TCGA-...`：使用 GDC API 查询项目信息；默认还会额外查询 Xena hub，统计该项目在 hub 上可用的 `TCGA-XXX.*` 数据集数量（`--xena=false` 可关闭）。
+- `SRR/SRP/...`：使用 NCBI E-utilities 做检索；精确 accession 查询时也会解析 run 信息。
+- `TCGA-...`：默认会同时查询 GDC 项目和 Xena hub；返回结果里会分别标记为 `source=tcga` 与 `source=xena`。
+- `xena` 关键词检索：直接查 hub 上的 dataset 名称和 `longtitle`，适合找组学资源、矩阵名、cohort 相关条目。
+- `--source` 支持 `all|geo|sra|tcga|xena`；默认 `all`。
 - 输入大小写不敏感（例如 `gse235527` / `tcga-laml` 都可）。
+
+### SRA
+
+支持对 `SRR/SRX/SRS/SRP`（以及 `ERR/ERP/DRR/DRP` 等同类 accession）进行下载。
+
+```bash
+./getdown sra --accession SRR123456 --out ./out/srr123456
+./getdown sra --accession SRP012345 --out ./out/srp012345
+./getdown sra --accession SRR123456 --kind fastq --out ./out/srr123456
+```
+
+说明：
+
+- 下载前会先解析 run 列表并写出 `runinfo.tsv` 和 `links.tsv`。
+- 当前版本通过公开下载链接直接下载，不依赖 `SRA Toolkit`。
+- `--kind auto|fastq|submitted|sra|all`
+- `auto` 默认优先级：`fastq` > `submitted` > `sra`
+- 文件会保存到 `files/<run_accession>/...`
+- 会写出 `metadata.json`
 
 ## 说明 / 局限
 

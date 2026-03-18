@@ -7,6 +7,10 @@ on:
         description: "GEO GSE accession (small preferred)"
         required: false
         default: "GSE10072"
+      sra_accession:
+        description: "SRA accession for search e2e"
+        required: false
+        default: "SRR390728"
       tcga_project:
         description: "TCGA project id"
         required: false
@@ -35,9 +39,10 @@ jobs:
       - name: Build
         run: go build ./cmd/getdown
 
-      - name: Download GEO + TCGA
+      - name: Search + Download GEO/TCGA
         env:
           GSE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.gse || 'GSE10072' }}
+          SRA_ACCESSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sra_accession || 'SRR390728' }}
           TCGA_PROJECT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tcga_project || 'TCGA-CHOL' }}
         run: |
           set -euo pipefail
@@ -53,6 +58,22 @@ jobs:
             done
             return 1
           }
+
+          search_and_check() {
+            local name="$1"
+            local expect="$2"
+            shift 2
+            retry ./getdown search --json "$@" > "_ci_out/${name}.json"
+            test -s "_ci_out/${name}.json"
+            grep -q "\"source\": \"${expect}\"" "_ci_out/${name}.json"
+          }
+
+          search_and_check "search_geo_${GSE}" "geo" --source geo "${GSE}"
+          search_and_check "search_sra_${SRA_ACCESSION}" "sra" --source sra "${SRA_ACCESSION}"
+          search_and_check "search_tcga_${TCGA_PROJECT}" "tcga" --source tcga "${TCGA_PROJECT}"
+          search_and_check "search_xena_${TCGA_PROJECT}" "xena" --source xena "${TCGA_PROJECT}"
+          search_and_check "search_all_${TCGA_PROJECT}" "tcga" --source all "${TCGA_PROJECT}"
+          grep -q "\"source\": \"xena\"" "_ci_out/search_all_${TCGA_PROJECT}.json"
 
           retry ./getdown geo  --gse "${GSE}" --out "_ci_out/geo_${GSE}" --timeout 20m
           set +e

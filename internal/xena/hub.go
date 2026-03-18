@@ -21,22 +21,72 @@ type hubClient struct {
 	http *httpx.Client
 }
 
-// ListDatasetNamesByPrefix lists hub datasets whose name begins with prefix.
+type DatasetInfo struct {
+	Name      string
+	LongTitle string
+	Type      string
+	Probemap  string
+	Status    string
+}
+
+// ListDatasetsByPrefix lists hub datasets whose name begins with prefix.
 // For TCGA projects, use "<PROJECT>." (e.g. "TCGA-CHOL.").
-func ListDatasetNamesByPrefix(ctx context.Context, prefix string) ([]string, error) {
+func ListDatasetsByPrefix(ctx context.Context, prefix string) ([]DatasetInfo, error) {
 	c := newHubClient(os.Getenv("GETDOWN_XENA_HUB"))
 	datasets, err := c.listDatasetsByPrefix(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]string, 0, len(datasets))
+	out := make([]DatasetInfo, 0, len(datasets))
 	for _, d := range datasets {
 		if strings.TrimSpace(d.Name) == "" {
 			continue
 		}
+		out = append(out, DatasetInfo{
+			Name:      d.Name,
+			LongTitle: d.LongTitle,
+			Type:      d.Type,
+			Probemap:  d.Probemap,
+			Status:    d.Status,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// ListDatasetNamesByPrefix lists hub dataset names whose name begins with prefix.
+func ListDatasetNamesByPrefix(ctx context.Context, prefix string) ([]string, error) {
+	datasets, err := ListDatasetsByPrefix(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(datasets))
+	for _, d := range datasets {
 		out = append(out, d.Name)
 	}
-	sort.Strings(out)
+	return out, nil
+}
+
+// SearchDatasets performs a best-effort search over hub dataset name and long title.
+func SearchDatasets(ctx context.Context, term string, limit int) ([]DatasetInfo, error) {
+	c := newHubClient(os.Getenv("GETDOWN_XENA_HUB"))
+	datasets, err := c.searchDatasets(ctx, term, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DatasetInfo, 0, len(datasets))
+	for _, d := range datasets {
+		if strings.TrimSpace(d.Name) == "" {
+			continue
+		}
+		out = append(out, DatasetInfo{
+			Name:      d.Name,
+			LongTitle: d.LongTitle,
+			Type:      d.Type,
+			Probemap:  d.Probemap,
+			Status:    d.Status,
+		})
+	}
 	return out, nil
 }
 
@@ -158,20 +208,22 @@ const (
 )
 
 type datasetMeta struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Probemap string `json:"probemap"`
-	Status   string `json:"status"`
+	Name      string `json:"name"`
+	LongTitle string `json:"longtitle"`
+	Type      string `json:"type"`
+	Probemap  string `json:"probemap"`
+	Status    string `json:"status"`
 }
 
 func (d *datasetMeta) UnmarshalJSON(b []byte) error {
 	// Some hub queries can return nulls for optional columns (e.g. probemap/status).
 	// Treat null as empty string for robustness.
 	type raw struct {
-		Name     json.RawMessage `json:"name"`
-		Type     json.RawMessage `json:"type"`
-		Probemap json.RawMessage `json:"probemap"`
-		Status   json.RawMessage `json:"status"`
+		Name      json.RawMessage `json:"name"`
+		LongTitle json.RawMessage `json:"longtitle"`
+		Type      json.RawMessage `json:"type"`
+		Probemap  json.RawMessage `json:"probemap"`
+		Status    json.RawMessage `json:"status"`
 	}
 	var r raw
 	if err := json.Unmarshal(b, &r); err != nil {
@@ -189,6 +241,9 @@ func (d *datasetMeta) UnmarshalJSON(b []byte) error {
 	}
 	var err error
 	if d.Name, err = readString(r.Name); err != nil {
+		return err
+	}
+	if d.LongTitle, err = readString(r.LongTitle); err != nil {
 		return err
 	}
 	if d.Type, err = readString(r.Type); err != nil {
@@ -210,7 +265,27 @@ func (c *hubClient) listDatasetsByPrefix(ctx context.Context, prefix string) ([]
 	}
 	// List all datasets whose name begins with "<project>." (covers all omics + resources).
 	like := prefix + "%"
-	edn := "(query {:select [:name :type :probemap :status] :from [:dataset] :where [:like :name " + ednString(like) + "]})"
+	edn := "(query {:select [:name :longtitle :type :probemap :status] :from [:dataset] :where [:like :name " + ednString(like) + "]})"
+	var out []datasetMeta
+	if err := c.postEDN(ctx, edn, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hubClient) searchDatasets(ctx context.Context, term string, limit int) ([]datasetMeta, error) {
+	term = strings.TrimSpace(term)
+	if term == "" {
+		return nil, fmt.Errorf("xena hub: empty search term")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	like := "%" + term + "%"
+	edn := "(query {:select [:name :longtitle :type :probemap :status] :from [[:dataset :d]] :where [:or [:like :d.name " + ednString(like) + "] [:like :d.longtitle " + ednString(like) + "]] :limit " + ednInt(limit) + "})"
 	var out []datasetMeta
 	if err := c.postEDN(ctx, edn, &out); err != nil {
 		return nil, err
