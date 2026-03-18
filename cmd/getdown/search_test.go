@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -49,6 +50,27 @@ func captureOutput(t *testing.T, fn func()) (stdout string, stderr string) {
 	return outBuf.String(), errBuf.String()
 }
 
+func captureOutputWithInput(t *testing.T, input string, fn func()) (stdout string, stderr string) {
+	t.Helper()
+
+	oldIn := os.Stdin
+	rIn, wIn, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stdin: %v", err)
+	}
+	if _, err := io.WriteString(wIn, input); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	_ = wIn.Close()
+	os.Stdin = rIn
+	defer func() {
+		os.Stdin = oldIn
+		_ = rIn.Close()
+	}()
+
+	return captureOutput(t, fn)
+}
+
 func TestSearch_GEO_Accession(t *testing.T) {
 	withStubTransport(t, stubTransport{roundTrip: func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodGet {
@@ -74,6 +96,35 @@ func TestSearch_GEO_Accession(t *testing.T) {
 		}
 		if !strings.Contains(stdout, "geo\tGSE235527\tT\t") {
 			t.Fatalf("unexpected stdout:\n%s", stdout)
+		}
+	})
+}
+
+func TestSearch_JSONOutput(t *testing.T) {
+	withStubTransport(t, stubTransport{roundTrip: func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodGet {
+			return resp(404, nil, []byte("not found"), r), nil
+		}
+		switch {
+		case strings.Contains(r.URL.Host, "eutils.ncbi.nlm.nih.gov") && strings.HasSuffix(r.URL.Path, "/esearch.fcgi"):
+			return resp(200, map[string]string{"Content-Type": "application/json"}, []byte(`{"esearchresult":{"idlist":["200235527"]}}`), r), nil
+		case strings.Contains(r.URL.Host, "eutils.ncbi.nlm.nih.gov") && strings.HasSuffix(r.URL.Path, "/esummary.fcgi"):
+			return resp(200, map[string]string{"Content-Type": "application/json"}, []byte(`{"result":{"uids":["200235527"],"200235527":{"accession":"GSE235527","title":"T","summary":"S"}}}`), r), nil
+		default:
+			return resp(404, nil, []byte("not found"), r), nil
+		}
+	}}, func() {
+		stdout, stderr := captureOutput(t, func() {
+			code := runWithArgs([]string{"getdown", "search", "--source", "geo", "--json", "gse235527"})
+			if code != 0 {
+				t.Fatalf("exit code=%d", code)
+			}
+		})
+		if stderr != "" {
+			t.Fatalf("unexpected stderr: %s", stderr)
+		}
+		if !strings.Contains(stdout, `"source": "geo"`) || !strings.Contains(stdout, `"id": "GSE235527"`) {
+			t.Fatalf("unexpected json stdout:\n%s", stdout)
 		}
 	})
 }
@@ -104,6 +155,59 @@ func TestSearch_SRA_Accession(t *testing.T) {
 			}
 			if !strings.Contains(stdout, "sra\tSRR123456\tHomo sapiens\t") {
 				t.Fatalf("unexpected stdout:\n%s", stdout)
+			}
+		})
+	})
+}
+
+func TestSearch_Interactive_Download_GEO(t *testing.T) {
+	seriesMatrix := strings.Join([]string{
+		"!Series_title\tExample",
+		"!Sample_title\tS1\tS2",
+		"!series_matrix_table_begin",
+		"ID_REF\tGSM1\tGSM2",
+		"geneA\t1\t2",
+		"!series_matrix_table_end",
+		"",
+	}, "\n")
+
+	base := "https://geo.test"
+	withEnv(t, "GETDOWN_GEO_FTP_BASE", base, func() {
+		withStubTransport(t, stubTransport{roundTrip: func(r *http.Request) (*http.Response, error) {
+			switch {
+			case r.Method == http.MethodGet && strings.Contains(r.URL.Host, "eutils.ncbi.nlm.nih.gov") && strings.HasSuffix(r.URL.Path, "/esearch.fcgi"):
+				return resp(200, map[string]string{"Content-Type": "application/json"}, []byte(`{"esearchresult":{"idlist":["200235527"]}}`), r), nil
+			case r.Method == http.MethodGet && strings.Contains(r.URL.Host, "eutils.ncbi.nlm.nih.gov") && strings.HasSuffix(r.URL.Path, "/esummary.fcgi"):
+				return resp(200, map[string]string{"Content-Type": "application/json"}, []byte(`{"result":{"uids":["200235527"],"200235527":{"accession":"GSE235527","title":"T","summary":"S"}}}`), r), nil
+			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "_series_matrix.txt.gz"):
+				var buf bytes.Buffer
+				writeGzip(&buf, []byte(seriesMatrix))
+				return resp(200, map[string]string{"Content-Type": "application/x-gzip"}, buf.Bytes(), r), nil
+			default:
+				return resp(404, nil, []byte("not found"), r), nil
+			}
+		}}, func() {
+			baseOut := t.TempDir()
+			stdout, stderr := captureOutputWithInput(t, "1\n", func() {
+				code := runWithArgs([]string{
+					"getdown", "search",
+					"--source", "geo",
+					"--interactive",
+					"--download-out", baseOut,
+					"gse235527",
+				})
+				if code != 0 {
+					t.Fatalf("exit code=%d", code)
+				}
+			})
+			if stderr != "" {
+				t.Fatalf("unexpected stderr: %s", stderr)
+			}
+			if !strings.Contains(stdout, "Downloaded to") {
+				t.Fatalf("unexpected stdout:\n%s", stdout)
+			}
+			if _, err := os.Stat(filepath.Join(baseOut, "geo_GSE235527", "expression.tsv")); err != nil {
+				t.Fatalf("missing downloaded expression.tsv: %v", err)
 			}
 		})
 	})

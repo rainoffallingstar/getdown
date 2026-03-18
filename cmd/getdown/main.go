@@ -51,8 +51,9 @@ func usage() {
 Usage:
   getdown tcga --project TCGA-LAML --out ./out [--provider xena|auto|gdc]
   getdown geo  --gse GSE13535     --out ./out [--sup]
-  getdown sra  --accession SRR12345 --out ./out [--kind auto|fastq|submitted|sra|all]
-  getdown search [--source all|geo|sra|tcga|xena] [--limit 20] <query...>
+  getdown sra  --accession SRR12345 --out ./out [--kind auto|fastq|submitted|sra|all] [--decode none|fastq|fastq.gz]
+  getdown search [--source all|geo|sra|tcga|xena] [--limit 20] [--json] <query...>
+  getdown search --interactive --download-out ./out/searches <query...>
 
 `)
 }
@@ -65,6 +66,7 @@ func runTCGA(ctx context.Context, args []string) int {
 	var outDir string
 	var provider string
 	var keepRaw bool
+	var jobs int
 	var timeout time.Duration
 	var workflow string
 	var xenaMode string
@@ -72,6 +74,7 @@ func runTCGA(ctx context.Context, args []string) int {
 	fs.StringVar(&project, "project", "", "TCGA project id, e.g. TCGA-LAML")
 	fs.StringVar(&outDir, "out", "", "output directory")
 	fs.StringVar(&provider, "provider", "xena", "xena|auto|gdc")
+	fs.IntVar(&jobs, "jobs", 0, "max concurrent download/processing jobs (0=auto)")
 	fs.BoolVar(&keepRaw, "keep-raw", false, "keep raw downloads under out/raw")
 	fs.DurationVar(&timeout, "timeout", 45*time.Minute, "overall timeout")
 	fs.StringVar(&workflow, "workflow", "STAR - Counts", "GDC workflow.type for gene expression")
@@ -95,6 +98,7 @@ func runTCGA(ctx context.Context, args []string) int {
 		Workflow: workflow,
 		KeepRaw:  keepRaw,
 		XenaMode: xenaMode,
+		Jobs:     jobs,
 	}); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			fmt.Fprintf(os.Stderr, "tcga: timed out: %v\n", err)
@@ -114,11 +118,13 @@ func runGEO(ctx context.Context, args []string) int {
 	var outDir string
 	var sup bool
 	var keepRaw bool
+	var jobs int
 	var timeout time.Duration
 
 	fs.StringVar(&gse, "gse", "", "GEO series accession, e.g. GSE13535")
 	fs.StringVar(&outDir, "out", "", "output directory")
 	fs.BoolVar(&sup, "sup", false, "download supplementary files when available")
+	fs.IntVar(&jobs, "jobs", 0, "max concurrent download/processing jobs (0=auto)")
 	fs.BoolVar(&keepRaw, "keep-raw", false, "keep raw downloads under out/raw")
 	fs.DurationVar(&timeout, "timeout", 30*time.Minute, "overall timeout")
 
@@ -138,6 +144,7 @@ func runGEO(ctx context.Context, args []string) int {
 		OutDir:  outDir,
 		Sup:     sup,
 		KeepRaw: keepRaw,
+		Jobs:    jobs,
 	}); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			fmt.Fprintf(os.Stderr, "geo: timed out: %v\n", err)
@@ -157,10 +164,14 @@ func runSRA(ctx context.Context, args []string) int {
 	var outDir string
 	var timeout time.Duration
 	var kind string
+	var decode string
+	var jobs int
 
 	fs.StringVar(&accession, "accession", "", "SRA accession, e.g. SRR12345 or SRP12345")
 	fs.StringVar(&outDir, "out", "", "output directory")
 	fs.StringVar(&kind, "kind", "auto", "download kind: auto|fastq|submitted|sra|all")
+	fs.StringVar(&decode, "decode", "none", "decode downloaded .sra files: none|fastq|fastq.gz")
+	fs.IntVar(&jobs, "jobs", 0, "max concurrent download/processing jobs (0=auto)")
 	fs.DurationVar(&timeout, "timeout", 2*time.Hour, "overall timeout")
 
 	if err := fs.Parse(args); err != nil {
@@ -178,6 +189,8 @@ func runSRA(ctx context.Context, args []string) int {
 		Accession: accession,
 		OutDir:    outDir,
 		Kind:      kind,
+		Decode:    decode,
+		Jobs:      jobs,
 	}); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			fmt.Fprintf(os.Stderr, "sra: timed out: %v\n", err)

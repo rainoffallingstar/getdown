@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"getdown/internal/httpx"
+	"getdown/internal/parallel"
 )
 
 type Request struct {
@@ -24,6 +25,7 @@ type Request struct {
 	OutDir   string
 	RawDir   string // optional
 	Workflow string // e.g. "STAR - Counts"
+	Jobs     int
 }
 
 type Result struct {
@@ -68,7 +70,7 @@ func Download(ctx context.Context, req Request) (Result, error) {
 	}
 
 	exprPath := filepath.Join(req.OutDir, "expression.tsv")
-	if err := downloadAndMergeCounts(ctx, c, files, req.RawDir, exprPath); err != nil {
+	if err := downloadAndMergeCounts(ctx, c, files, req.RawDir, exprPath, req.Jobs); err != nil {
 		return Result{}, err
 	}
 
@@ -246,28 +248,24 @@ func downloadClinicalTSV(ctx context.Context, c *httpx.Client, project, destPath
 	return os.WriteFile(destPath, body, 0o644)
 }
 
-func downloadAndMergeCounts(ctx context.Context, c *httpx.Client, files []expressionFile, rawDir, outPath string) error {
+func downloadAndMergeCounts(ctx context.Context, c *httpx.Client, files []expressionFile, rawDir, outPath string, jobs int) error {
 	sampleIDs := make([]string, 0, len(files))
 	for _, f := range files {
 		sampleIDs = append(sampleIDs, f.SampleID)
 	}
 
-	type matrix struct {
-		GeneIDs []string
-		Counts  []int32 // row-major: geneIndex*sampleCount + sampleIndex
-		Samples []string
+	type sampleData struct {
+		Genes  []string
+		Counts []int32
 	}
 
-	var m matrix
-	m.Samples = sampleIDs
-	sampleCount := int32(len(sampleIDs))
-
-	for sampleIndex, f := range files {
+	results := make([]sampleData, len(files))
+	if err := parallel.ForEach(ctx, jobs, len(files), func(ctx context.Context, sampleIndex int) error {
+		f := files[sampleIndex]
 		url := apiBaseURL() + "/data/" + f.FileID
 
 		dest := ""
 		if rawDir != "" {
-			// Keep the filename for readability, but ensure it's safe.
 			name := sanitizeFileName(f.FileName)
 			if name == "" {
 				name = f.FileID + ".txt"
@@ -283,14 +281,36 @@ func downloadAndMergeCounts(ctx context.Context, c *httpx.Client, files []expres
 
 		r, closeFn, err := openMaybeGzip(dest)
 		if err != nil {
+			if rawDir == "" {
+				_ = os.Remove(dest)
+			}
 			return err
 		}
 		genes, counts, err := parseCounts(r)
 		_ = closeFn()
+		if rawDir == "" {
+			_ = os.Remove(dest)
+		}
 		if err != nil {
 			return fmt.Errorf("gdc: parse counts %s (%s): %w", f.FileID, f.SampleID, err)
 		}
+		results[sampleIndex] = sampleData{Genes: genes, Counts: counts}
+		return nil
+	}); err != nil {
+		return err
+	}
 
+	type matrix struct {
+		GeneIDs []string
+		Counts  []int32
+		Samples []string
+	}
+	var m matrix
+	m.Samples = sampleIDs
+	sampleCount := int32(len(sampleIDs))
+	for sampleIndex, f := range files {
+		genes := results[sampleIndex].Genes
+		counts := results[sampleIndex].Counts
 		if sampleIndex == 0 {
 			m.GeneIDs = genes
 			m.Counts = make([]int32, int32(len(genes))*sampleCount)
@@ -302,11 +322,6 @@ func downloadAndMergeCounts(ctx context.Context, c *httpx.Client, files []expres
 
 		for gi, c := range counts {
 			m.Counts[int32(gi)*sampleCount+int32(sampleIndex)] = c
-		}
-
-		// Cleanup temp download unless requested to keep.
-		if rawDir == "" {
-			_ = os.Remove(dest)
 		}
 	}
 

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"getdown/internal/httpx"
+	"getdown/internal/parallel"
 )
 
 type hubClient struct {
@@ -442,7 +443,8 @@ type hubDownloadAllResult struct {
 	ClinicalDataset   string
 }
 
-func downloadTCGACoreFromHub(ctx context.Context, project, outDir string) (hubDownloadAllResult, error) {
+func downloadTCGACoreFromHub(ctx context.Context, project, outDir string, jobs int) (hubDownloadAllResult, error) {
+	_ = jobs
 	c := newHubClient(os.Getenv("GETDOWN_XENA_HUB"))
 	datasets, err := c.listDatasetsByPrefix(ctx, project+".")
 	if err != nil {
@@ -856,7 +858,7 @@ func downloadQueryDataset(ctx context.Context, c *hubClient, dataset string, out
 	return rowsWritten, nil
 }
 
-func downloadTCGAAllFromHub(ctx context.Context, project, outDir string) (hubDownloadAllResult, error) {
+func downloadTCGAAllFromHub(ctx context.Context, project, outDir string, jobs int) (hubDownloadAllResult, error) {
 	c := newHubClient(os.Getenv("GETDOWN_XENA_HUB"))
 	datasets, err := c.listDatasetsByPrefix(ctx, project+".")
 	if err != nil {
@@ -931,6 +933,13 @@ func downloadTCGAAllFromHub(ctx context.Context, project, outDir string) (hubDow
 		}
 	}
 
+	type datasetTask struct {
+		Name     string
+		Type     string
+		Probemap string
+		OutPath  string
+	}
+	var tasks []datasetTask
 	for _, d := range datasets {
 		if d.Name == "" {
 			continue
@@ -942,37 +951,61 @@ func downloadTCGAAllFromHub(ctx context.Context, project, outDir string) (hubDow
 			continue
 		}
 		outPath := filepath.Join(omicsDir, datasetOutName(d.Name))
-		switch d.Type {
+		tasks = append(tasks, datasetTask{Name: d.Name, Type: d.Type, Probemap: d.Probemap, OutPath: outPath})
+	}
+
+	type taskResult struct {
+		Name    string
+		Path    string
+		Skipped string
+	}
+	results := make([]taskResult, len(tasks))
+	if err := parallel.ForEach(ctx, jobs, len(tasks), func(ctx context.Context, i int) error {
+		task := tasks[i]
+		switch task.Type {
 		case "genomicMatrix":
-			if d.Probemap == "" {
-				// Try to look it up via metadata (some hubs omit probemap in query output).
-				meta, err := c.getDatasetMeta(ctx, d.Name)
+			probemap := task.Probemap
+			if probemap == "" {
+				meta, err := c.getDatasetMeta(ctx, task.Name)
 				if err == nil {
-					d.Probemap = meta.Probemap
+					probemap = meta.Probemap
 				}
 			}
-			if d.Probemap == "" {
-				skipped[d.Name] = "missing probemap"
-				continue
+			if probemap == "" {
+				results[i] = taskResult{Name: task.Name, Skipped: "missing probemap"}
+				return nil
 			}
-			if _, _, err := downloadMatrixDataset(ctx, c, d.Name, d.Probemap, outPath); err != nil {
-				skipped[d.Name] = err.Error()
-				continue
+			if _, _, err := downloadMatrixDataset(ctx, c, task.Name, probemap, task.OutPath); err != nil {
+				results[i] = taskResult{Name: task.Name, Skipped: err.Error()}
+				return nil
 			}
-			files[d.Name] = outPath
+			results[i] = taskResult{Name: task.Name, Path: task.OutPath}
 		case "clinicalMatrix":
-			if _, err := downloadClinicalDataset(ctx, c, d.Name, exprSamples, outPath); err != nil {
-				skipped[d.Name] = err.Error()
-				continue
+			if _, err := downloadClinicalDataset(ctx, c, task.Name, exprSamples, task.OutPath); err != nil {
+				results[i] = taskResult{Name: task.Name, Skipped: err.Error()}
+				return nil
 			}
-			files[d.Name] = outPath
+			results[i] = taskResult{Name: task.Name, Path: task.OutPath}
 		default:
-			if _, err := downloadQueryDataset(ctx, c, d.Name, outPath); err != nil {
-				skipped[d.Name] = err.Error()
-				continue
+			if _, err := downloadQueryDataset(ctx, c, task.Name, task.OutPath); err != nil {
+				results[i] = taskResult{Name: task.Name, Skipped: err.Error()}
+				return nil
 			}
-			files[d.Name] = outPath
+			results[i] = taskResult{Name: task.Name, Path: task.OutPath}
 		}
+		return nil
+	}); err != nil {
+		return hubDownloadAllResult{}, err
+	}
+	for _, r := range results {
+		if r.Name == "" {
+			continue
+		}
+		if r.Skipped != "" {
+			skipped[r.Name] = r.Skipped
+			continue
+		}
+		files[r.Name] = r.Path
 	}
 
 	skippedPath := ""

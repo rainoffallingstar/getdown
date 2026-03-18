@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"getdown/internal/httpx"
 )
@@ -16,6 +17,7 @@ type TCGARequest struct {
 	OutDir  string
 	RawDir  string // optional
 	Mode    string // all|core
+	Jobs    int
 }
 
 type TCGAResult struct {
@@ -56,7 +58,7 @@ func DownloadTCGA(ctx context.Context, req TCGARequest) (TCGAResult, error) {
 	// Prefer the hub API path because it supports multi-omics and doesn't rely on static mirrors.
 	var hubErr error
 	if mode == "all" {
-		if hubRes, err := downloadTCGAAllFromHub(ctx, req.Project, req.OutDir); err == nil {
+		if hubRes, err := downloadTCGAAllFromHub(ctx, req.Project, req.OutDir, req.Jobs); err == nil {
 			return TCGAResult{
 				ExpressionTSV:       hubRes.ExpressionTSV,
 				PhenotypeTSV:        hubRes.ClinicalTSV,
@@ -68,7 +70,7 @@ func DownloadTCGA(ctx context.Context, req TCGARequest) (TCGAResult, error) {
 			hubErr = err
 		}
 	} else {
-		if hubRes, err := downloadTCGACoreFromHub(ctx, req.Project, req.OutDir); err == nil {
+		if hubRes, err := downloadTCGACoreFromHub(ctx, req.Project, req.OutDir, req.Jobs); err == nil {
 			return TCGAResult{
 				ExpressionTSV:       hubRes.ExpressionTSV,
 				PhenotypeTSV:        hubRes.ClinicalTSV,
@@ -83,20 +85,32 @@ func DownloadTCGA(ctx context.Context, req TCGARequest) (TCGAResult, error) {
 
 	c := httpx.New()
 
-	exprCandidates := expressionCandidates(req.Project)
-	exprURL, exprRawPath, err := downloadFirstOK(ctx, c, exprCandidates, req.OutDir, req.RawDir, "expression.tsv")
-	if err != nil {
+	var exprURL, exprRawPath, phenoURL string
+	var exprErr, phenoErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		exprCandidates := expressionCandidates(req.Project)
+		exprURL, exprRawPath, exprErr = downloadFirstOK(ctx, c, exprCandidates, req.OutDir, req.RawDir, "expression.tsv")
+	}()
+	go func() {
+		defer wg.Done()
+		phenoCandidates := phenotypeCandidates(req.Project)
+		phenoURL, _, phenoErr = downloadFirstOK(ctx, c, phenoCandidates, req.OutDir, req.RawDir, "clinical.tsv")
+	}()
+	wg.Wait()
+
+	if exprErr != nil {
 		// Legacy fallback: static mirrors only.
 		if hubErr != nil {
-			return TCGAResult{}, fmt.Errorf("xena hub failed: %v; static mirrors failed: %w", hubErr, err)
+			return TCGAResult{}, fmt.Errorf("xena hub failed: %v; static mirrors failed: %w", hubErr, exprErr)
 		}
-		return TCGAResult{}, fmt.Errorf("xena: expression: %w", err)
+		return TCGAResult{}, fmt.Errorf("xena: expression: %w", exprErr)
 	}
 	_ = exprRawPath // reserved for metadata later if desired
 
-	phenoCandidates := phenotypeCandidates(req.Project)
-	phenoURL, _, perr := downloadFirstOK(ctx, c, phenoCandidates, req.OutDir, req.RawDir, "clinical.tsv")
-	if perr != nil {
+	if phenoErr != nil {
 		// Some projects might not have phenotype mirrored. Keep expression download as success signal.
 		phenoURL = ""
 	}

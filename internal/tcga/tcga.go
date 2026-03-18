@@ -22,6 +22,7 @@ type Request struct {
 	Workflow string
 	KeepRaw  bool
 	XenaMode string // all|core
+	Jobs     int
 }
 
 func Download(ctx context.Context, req Request) error {
@@ -77,6 +78,7 @@ func downloadGDC(ctx context.Context, req Request, metaPath string, params []byt
 		OutDir:   req.OutDir,
 		RawDir:   rawDir,
 		Workflow: req.Workflow,
+		Jobs:     req.Jobs,
 	})
 	if err != nil {
 		return err
@@ -105,6 +107,7 @@ func downloadXena(ctx context.Context, req Request, metaPath string, params []by
 		OutDir:  req.OutDir,
 		RawDir:  rawDir,
 		Mode:    req.XenaMode,
+		Jobs:    req.Jobs,
 	})
 	if err != nil {
 		return err

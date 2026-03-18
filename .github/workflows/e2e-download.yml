@@ -43,6 +43,15 @@ jobs:
       - name: Build
         run: go build ./cmd/getdown
 
+      - name: Check optional SRA decode backend
+        run: |
+          if command -v fasterq-dump >/dev/null 2>&1; then
+            echo "fasterq-dump is available; SRA decode can run in this environment."
+          else
+            echo "fasterq-dump is not installed in this workflow."
+            echo "Real e2e covers direct-link SRA downloads; SRA decode is covered by Go unit tests with a mock backend."
+          fi
+
       - name: Search + Download GEO/TCGA
         env:
           GSE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.gse || 'GSE10072' }}

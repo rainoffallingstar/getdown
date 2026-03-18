@@ -17,6 +17,7 @@ import (
 
 	"getdown/internal/httpx"
 	"getdown/internal/meta"
+	"getdown/internal/parallel"
 )
 
 type Request struct {
@@ -24,6 +25,7 @@ type Request struct {
 	OutDir  string
 	Sup     bool
 	KeepRaw bool
+	Jobs    int
 }
 
 func Download(ctx context.Context, req Request) error {
@@ -110,7 +112,7 @@ func Download(ctx context.Context, req Request) error {
 			}
 		}
 		if needSup {
-			report, err := downloadSupplementaryWithReport(ctx, c, supURLs, filepath.Join(req.OutDir, "supplementary"), autoSup)
+			report, err := downloadSupplementaryWithReport(ctx, c, supURLs, filepath.Join(req.OutDir, "supplementary"), autoSup, req.Jobs)
 			if err != nil {
 				return err
 			}
@@ -120,15 +122,11 @@ func Download(ctx context.Context, req Request) error {
 		// If this is array/chip data, also download platform annotation.
 		platformIDs := extractGPLs(info.PlatformIDs)
 		if isMicroarray(info.SeriesTypes, platformIDs) && len(platformIDs) > 0 {
-			for _, gpl := range platformIDs {
-				p, err := downloadPlatformAnnotation(ctx, c, gpl, req.OutDir)
-				if err != nil {
-					return err
-				}
-				if p != "" {
-					platformFiles = append(platformFiles, p)
-				}
+			files, err := downloadPlatformAnnotations(ctx, c, platformIDs, req.OutDir, req.Jobs)
+			if err != nil {
+				return err
 			}
+			platformFiles = append(platformFiles, files...)
 		}
 	} else {
 		// Fallback to family SOFT for supplementary URLs + basic metadata.
@@ -179,7 +177,7 @@ func Download(ctx context.Context, req Request) error {
 			return err
 		}
 		if req.Sup {
-			report, err := downloadSupplementaryWithReport(ctx, c, supURLs, filepath.Join(req.OutDir, "supplementary"), false)
+			report, err := downloadSupplementaryWithReport(ctx, c, supURLs, filepath.Join(req.OutDir, "supplementary"), false, req.Jobs)
 			if err != nil {
 				return err
 			}
@@ -188,15 +186,11 @@ func Download(ctx context.Context, req Request) error {
 
 		platformIDs := extractGPLs(seriesMeta["Series_platform_id"])
 		if isMicroarray(seriesMeta["Series_type"], platformIDs) && len(platformIDs) > 0 {
-			for _, gpl := range platformIDs {
-				p, err := downloadPlatformAnnotation(ctx, c, gpl, req.OutDir)
-				if err != nil {
-					return err
-				}
-				if p != "" {
-					platformFiles = append(platformFiles, p)
-				}
+			files, err := downloadPlatformAnnotations(ctx, c, platformIDs, req.OutDir, req.Jobs)
+			if err != nil {
+				return err
 			}
+			platformFiles = append(platformFiles, files...)
 		}
 	}
 
@@ -546,7 +540,7 @@ func cleanSupplementaryURL(u string) string {
 	return u
 }
 
-func downloadSupplementaryWithReport(ctx context.Context, c *httpx.Client, urls []string, outDir string, strict bool) (reportPath string, err error) {
+func downloadSupplementaryWithReport(ctx context.Context, c *httpx.Client, urls []string, outDir string, strict bool, jobs int) (reportPath string, err error) {
 	if len(urls) == 0 {
 		if strict {
 			return "", errors.New("geo: no supplementary URLs found for header-only series matrix")
@@ -564,10 +558,12 @@ func downloadSupplementaryWithReport(ctx context.Context, c *httpx.Client, urls 
 		Tries  int
 		Error  string
 	}
-	var rows []row
-	okCount := 0
-	var lastErr error
-
+	type task struct {
+		Orig string
+		URL  string
+		Dest string
+	}
+	var tasks []task
 	for _, u := range urls {
 		orig := strings.TrimSpace(u)
 		if orig == "" {
@@ -581,27 +577,44 @@ func downloadSupplementaryWithReport(ctx context.Context, c *httpx.Client, urls 
 		if name == "" {
 			name = "supplementary.bin"
 		}
-		dest := filepath.Join(outDir, name)
+		tasks = append(tasks, task{Orig: orig, URL: u, Dest: filepath.Join(outDir, name)})
+	}
 
-		var err error
+	rows := make([]row, len(tasks))
+	if err := parallel.ForEach(ctx, jobs, len(tasks), func(ctx context.Context, i int) error {
+		t := tasks[i]
+		var dlErr error
 		tries := 0
 		for tries = 1; tries <= 3; tries++ {
-			_, err = c.DownloadToFile(ctx, u, dest, false)
-			if err == nil {
+			_, dlErr = c.DownloadToFile(ctx, t.URL, t.Dest, false)
+			if dlErr == nil {
 				break
 			}
-			lastErr = err
 			if ctx.Err() != nil {
 				break
 			}
 			time.Sleep(time.Duration(tries*5) * time.Second)
 		}
-		if err != nil {
-			rows = append(rows, row{URL: orig, File: dest, Status: "error", Tries: tries - 1, Error: err.Error()})
+		if dlErr != nil {
+			rows[i] = row{URL: t.Orig, File: t.Dest, Status: "error", Tries: tries - 1, Error: dlErr.Error()}
+			return nil
+		}
+		rows[i] = row{URL: t.Orig, File: t.Dest, Status: "ok", Tries: tries, Error: ""}
+		return nil
+	}); err != nil {
+		return "", err
+	}
+
+	okCount := 0
+	var lastErr error
+	for _, r := range rows {
+		if r.Status == "ok" {
+			okCount++
 			continue
 		}
-		okCount++
-		rows = append(rows, row{URL: orig, File: dest, Status: "ok", Tries: tries, Error: ""})
+		if r.Error != "" {
+			lastErr = errors.New(r.Error)
+		}
 	}
 
 	reportPath = filepath.Join(outDir, "_report.tsv")
@@ -683,6 +696,27 @@ func downloadPlatformAnnotation(ctx context.Context, c *httpx.Client, gpl string
 
 	// Some platforms don't expose annotation in expected locations.
 	return "", nil
+}
+
+func downloadPlatformAnnotations(ctx context.Context, c *httpx.Client, platformIDs []string, outDir string, jobs int) ([]string, error) {
+	results := make([]string, len(platformIDs))
+	if err := parallel.ForEach(ctx, jobs, len(platformIDs), func(ctx context.Context, i int) error {
+		p, err := downloadPlatformAnnotation(ctx, c, platformIDs[i], outDir)
+		if err != nil {
+			return err
+		}
+		results[i] = p
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(results))
+	for _, p := range results {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 func safeLeaf(u string) string {

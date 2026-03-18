@@ -29,6 +29,7 @@ go build ./cmd/getdown
 - `--provider xena|auto|gdc`：默认 `xena`（`auto` 表示 Xena 失败再回退 GDC）
 - `--xena-mode all|core`：默认 `all`；`core` 只下载表达矩阵 + 临床（适合 CI 或快速验证）
 - `--workflow "STAR - Counts"`：GDC 表达量 workflow（默认同 R 脚本）
+- `--jobs N`：并发下载/处理任务数；`0` 表示自动（默认）
 - `--keep-raw`：保留下载的原始文件到 `out/raw/...`
 
 输出（写入 `--out` 目录）：
@@ -49,6 +50,10 @@ go build ./cmd/getdown
 ./getdown geo --gse GSE13535 --out ./out/gse13535 --sup
 ```
 
+可选参数：
+
+- `--jobs N`：并发下载 supplementary / 平台注释；`0` 表示自动（默认）
+
 输出（写入 `--out` 目录）：
 
 - `expression.tsv`：series matrix 表达矩阵（原样写出）
@@ -67,6 +72,8 @@ go build ./cmd/getdown
 ./getdown search SRR123456
 ./getdown search TCGA-LAML
 ./getdown search leukemia
+./getdown search --json leukemia
+./getdown search --interactive --download-out ./out/search-downloads GSE235527
 ./getdown search --source geo alzheimer
 ./getdown search --source sra leukemia
 ./getdown search --source tcga leukemia
@@ -80,6 +87,8 @@ go build ./cmd/getdown
 - `TCGA-...`：默认会同时查询 GDC 项目和 Xena hub；返回结果里会分别标记为 `source=tcga` 与 `source=xena`。
 - `xena` 关键词检索：直接查 hub 上的 dataset 名称和 `longtitle`，适合找组学资源、矩阵名、cohort 相关条目。
 - `--source` 支持 `all|geo|sra|tcga|xena`；默认 `all`。
+- `--json`：以 JSON 输出检索结果，适合脚本或下游程序处理。
+- `--interactive --download-out DIR`：以编号列表展示结果，并在终端里选择一项直接下载。
 - 输入大小写不敏感（例如 `gse235527` / `tcga-laml` 都可）。
 
 ### SRA
@@ -90,6 +99,9 @@ go build ./cmd/getdown
 ./getdown sra --accession SRR123456 --out ./out/srr123456
 ./getdown sra --accession SRP012345 --out ./out/srp012345
 ./getdown sra --accession SRR123456 --kind fastq --out ./out/srr123456
+./getdown sra --accession SRR123456 --kind sra --decode fastq --out ./out/srr123456
+./getdown sra --accession SRR123456 --kind sra --decode fastq.gz --out ./out/srr123456
+./getdown sra --accession SRR123456 --kind auto --decode fastq.gz --jobs 8 --out ./out/srr123456
 ```
 
 说明：
@@ -97,8 +109,16 @@ go build ./cmd/getdown
 - 下载前会先解析 run 列表并写出 `runinfo.tsv` 和 `links.tsv`。
 - 当前版本通过公开下载链接直接下载，不依赖 `SRA Toolkit`。
 - `--kind auto|fastq|submitted|sra|all`
+- `--decode none|fastq|fastq.gz`
+- `--jobs N`
 - `auto` 默认优先级：`fastq` > `submitted` > `sra`
+- 当使用 `--kind auto --decode fastq.gz` 时，会优先直下现成的 `fastq/fastq.gz`；只有没有直链时才回退到 `.sra + fasterq-dump`。
+- 当使用 `--decode fastq|fastq.gz` 且实际下载到 `.sra` 时，会调用 `fasterq-dump` 解码。
+- `--decode fastq.gz` 会在解码后继续压缩成 `.fastq.gz`
+- 解码需要本机安装 `fasterq-dump`，或通过环境变量 `GETDOWN_FASTERQ_DUMP` 指定其路径。
+- `--jobs` 同时控制多个 run / 文件的并发下载，以及 `.sra -> FASTQ` 时传给 `fasterq-dump -e` 的线程数；`0` 表示自动/工具默认
 - 文件会保存到 `files/<run_accession>/...`
+- 解码后的结果会保存到 `decoded/<run>/...`
 - 会写出 `metadata.json`
 
 ## 说明 / 局限
