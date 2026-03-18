@@ -21,6 +21,25 @@ type hubClient struct {
 	http *httpx.Client
 }
 
+// ListDatasetNamesByPrefix lists hub datasets whose name begins with prefix.
+// For TCGA projects, use "<PROJECT>." (e.g. "TCGA-CHOL.").
+func ListDatasetNamesByPrefix(ctx context.Context, prefix string) ([]string, error) {
+	c := newHubClient(os.Getenv("GETDOWN_XENA_HUB"))
+	datasets, err := c.listDatasetsByPrefix(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(datasets))
+	for _, d := range datasets {
+		if strings.TrimSpace(d.Name) == "" {
+			continue
+		}
+		out = append(out, d.Name)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 func newHubClient(base string) *hubClient {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	if base == "" {
@@ -917,13 +936,13 @@ func downloadTCGAAllFromHub(ctx context.Context, project, outDir string) (hubDow
 	}
 
 	return hubDownloadAllResult{
-		HubBase:            c.base,
-		DatasetFiles:       files,
-		ExpressionTSV:      exprTSV,
-		ClinicalTSV:        clinTSV,
-		SkippedTSV:         skippedPath,
-		ExpressionDataset:  exprDataset,
-		ClinicalDataset:    clinDataset,
+		HubBase:           c.base,
+		DatasetFiles:      files,
+		ExpressionTSV:     exprTSV,
+		ClinicalTSV:       clinTSV,
+		SkippedTSV:        skippedPath,
+		ExpressionDataset: exprDataset,
+		ClinicalDataset:   clinDataset,
 	}, nil
 }
 

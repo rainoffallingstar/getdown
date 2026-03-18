@@ -30,6 +30,8 @@ func run() int {
 		return runTCGA(ctx, os.Args[2:])
 	case "geo":
 		return runGEO(ctx, os.Args[2:])
+	case "search":
+		return runSearch(ctx, os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return 0
@@ -46,6 +48,7 @@ func usage() {
 Usage:
   getdown tcga --project TCGA-LAML --out ./out [--provider xena|auto|gdc]
   getdown geo  --gse GSE13535     --out ./out [--sup]
+  getdown search [--source all|geo|tcga] [--limit 20] <query...>
 
 `)
 }

@@ -57,6 +57,24 @@ go build ./cmd/getdown
 - `platform/`：芯片数据时下载的 GPL 注释（如 `GPL570.annot.gz`）
 - `metadata.json`
 
+### Search
+
+对输入的 `GSE...` / `TCGA-...` 进行快速检索（存在性 + 基本信息），或按关键词检索：
+
+```bash
+./getdown search GSE235527
+./getdown search TCGA-LAML
+./getdown search leukemia
+./getdown search --source geo alzheimer
+./getdown search --source tcga leukemia
+```
+
+说明：
+
+- `GSE...`：使用 NCBI E-utilities（`esearch/esummary`）查询 GEO 信息。
+- `TCGA-...`：使用 GDC API 查询项目信息；默认还会额外查询 Xena hub，统计该项目在 hub 上可用的 `TCGA-XXX.*` 数据集数量（`--xena=false` 可关闭）。
+- 输入大小写不敏感（例如 `gse235527` / `tcga-laml` 都可）。
+
 ## 说明 / 局限
 
 - Xena 默认会下载同一项目的所有 `TCGA-XXX.*` 数据集；不同项目/Hub 的可用数据集差异很大，下载量也可能非常大。
