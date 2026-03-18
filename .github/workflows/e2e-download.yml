@@ -84,6 +84,7 @@ jobs:
           test -s "_ci_out/sra_${SRA_DOWNLOAD_ACCESSION}/runinfo.tsv"
           test -s "_ci_out/sra_${SRA_DOWNLOAD_ACCESSION}/links.tsv"
           test -s "_ci_out/sra_${SRA_DOWNLOAD_ACCESSION}/metadata.json"
+          find "_ci_out/sra_${SRA_DOWNLOAD_ACCESSION}/files" -type f | grep -q .
           retry ./getdown geo  --gse "${GSE}" --out "_ci_out/geo_${GSE}" --timeout 20m
           set +e
           retry ./getdown geo  --gse "gse235527" --out "_ci_out/geo_GSE235527" --timeout 90m
@@ -97,8 +98,10 @@ jobs:
           retry ./getdown tcga --project "${TCGA_PROJECT}" --out "_ci_out/tcga_${TCGA_PROJECT}" --provider gdc --timeout 40m
           retry ./getdown tcga --project "${TCGA_PROJECT}" --out "_ci_out/tcga_${TCGA_PROJECT}_xena" --provider xena --timeout 40m
 
+          echo "== sra files =="
+          find "_ci_out/sra_${SRA_DOWNLOAD_ACCESSION}" -type f -print | sed -n '1,200p'
           echo "== outputs =="
-          find _ci_out -maxdepth 3 -type f -print | sed -n '1,200p'
+          find _ci_out -maxdepth 5 -type f -print | sed -n '1,300p'
 
       - name: Upload outputs
         uses: actions/upload-artifact@v4
