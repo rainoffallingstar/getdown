@@ -71,3 +71,19 @@ func TestCleanSupplementaryURL_StripsQuotesAndNormalizesFTP(t *testing.T) {
 		t.Fatalf("cleanSupplementaryURL: got %q want %q", got, want)
 	}
 }
+
+func TestCleanSupplementaryURL_SkipsPlaceholdersAndUnsupportedSchemes(t *testing.T) {
+	cases := []string{
+		`"NONE"`,
+		"NA",
+		"n/a",
+		"null",
+		"mailto:test@example.com",
+		"foo/bar",
+	}
+	for _, in := range cases {
+		if got := cleanSupplementaryURL(in); got != "" {
+			t.Fatalf("cleanSupplementaryURL(%q): got %q want empty", in, got)
+		}
+	}
+}

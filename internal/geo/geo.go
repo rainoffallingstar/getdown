@@ -533,9 +533,19 @@ func cleanSupplementaryURL(u string) string {
 	// GEO sometimes wraps URLs in quotes.
 	u = strings.Trim(u, "\"'")
 	u = strings.TrimSpace(u)
+	if u == "" {
+		return ""
+	}
+	switch strings.ToUpper(u) {
+	case "NONE", "NA", "N/A", "NULL", "NIL", "-":
+		return ""
+	}
 	// Normalize ftp links to https for CI environments.
 	if strings.HasPrefix(u, "ftp://") {
 		u = "https://" + strings.TrimPrefix(u, "ftp://")
+	}
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return ""
 	}
 	return u
 }

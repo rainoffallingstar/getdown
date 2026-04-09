@@ -108,6 +108,58 @@ func TestE2E_GEO_LocalServer(t *testing.T) {
 	})
 }
 
+func TestE2E_GEO_SupFlag_IgnoresPlaceholderSupplementaryURLs(t *testing.T) {
+	seriesMatrix := strings.Join([]string{
+		"!Series_title\tExample",
+		"!Sample_title\tS1\tS2",
+		"!Sample_supplementary_file\t\"NONE\"\t\"NONE\"",
+		"!series_matrix_table_begin",
+		"ID_REF\tGSM1\tGSM2",
+		"geneA\t1\t2",
+		"!series_matrix_table_end",
+		"",
+	}, "\n")
+
+	base := "https://geo.test"
+	withEnv(t, "GETDOWN_GEO_FTP_BASE", base, func() {
+		withStubTransport(t, stubTransport{roundTrip: func(r *http.Request) (*http.Response, error) {
+			switch {
+			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "_series_matrix.txt.gz"):
+				var buf bytes.Buffer
+				writeGzip(&buf, []byte(seriesMatrix))
+				return resp(200, map[string]string{"Content-Type": "application/x-gzip"}, buf.Bytes(), r), nil
+			default:
+				return resp(404, nil, []byte("not found"), r), nil
+			}
+		}}, func() {
+			outDir := t.TempDir()
+			code := runWithArgs([]string{
+				"getdown",
+				"geo",
+				"--gse", "GSE37815",
+				"--out", outDir,
+				"--sup",
+				"--timeout", "30s",
+			})
+			if code != 0 {
+				t.Fatalf("exit code=%d", code)
+			}
+
+			reportPath := filepath.Join(outDir, "supplementary", "_report.tsv")
+			report, err := os.ReadFile(reportPath)
+			if err != nil {
+				t.Fatalf("read supplementary report: %v", err)
+			}
+			if got, want := string(report), "url\tfile\tstatus\ttries\terror\n"; got != want {
+				t.Fatalf("unexpected supplementary report:\n%s", got)
+			}
+			if _, err := os.Stat(filepath.Join(outDir, "supplementary", "supplementary.bin")); !os.IsNotExist(err) {
+				t.Fatalf("unexpected placeholder supplementary download, stat err=%v", err)
+			}
+		})
+	})
+}
+
 func TestE2E_GEO_HeaderOnly_FallsBackToSup_And_DownloadsGPLAnnot(t *testing.T) {
 	seriesMatrix := strings.Join([]string{
 		"!Series_title\tExample",
