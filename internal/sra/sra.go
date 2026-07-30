@@ -3,7 +3,9 @@ package sra
 import (
 	"compress/gzip"
 	"context"
+	"crypto/md5"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +58,7 @@ type RemoteFile struct {
 	Kind         string
 	URL          string
 	SizeBytes    string
+	MD5Hex       string
 }
 
 type Result struct {
@@ -109,6 +113,13 @@ func Download(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if kind == "sra" && len(files) == 0 {
+		files, err = ResolveNativeSRAArchiveFiles(ctx, runs)
+		if err != nil {
+			return Result{}, err
+		}
+		effectiveKind = "sra-ncbi-sdl"
+	}
 
 	runInfoPath := filepath.Join(req.OutDir, "runinfo.tsv")
 	if err := writeRunInfo(runInfoPath, runs); err != nil {
@@ -128,9 +139,12 @@ func Download(ctx context.Context, req Request) (Result, error) {
 	paths := make([]string, len(files))
 	if err := parallel.ForEach(ctx, req.Jobs, len(files), func(ctx context.Context, i int) error {
 		file := files[i]
-		destPath := filepath.Join(req.OutDir, "files", file.RunAccession, safeLeaf(file.URL))
+		destPath := filepath.Join(req.OutDir, "files", file.RunAccession, downloadFileName(file))
 		if _, err := client.DownloadToFileMaybe(ctx, file.URL, destPath, false); err != nil {
 			return fmt.Errorf("sra: download %s: %w", file.URL, err)
+		}
+		if err := verifyRemoteFile(destPath, file); err != nil {
+			return err
 		}
 		paths[i] = destPath
 		return nil
@@ -160,7 +174,7 @@ func Download(ctx context.Context, req Request) (Result, error) {
 			"kind":           kind,
 			"effective_kind": effectiveKind,
 			"decode":         decode,
-			"provider":       "ena_filereport",
+			"provider":       providerForEffectiveKind(effectiveKind),
 		},
 		Files: map[string]any{
 			"runinfo": runInfoPath,
@@ -458,9 +472,9 @@ func writeLinks(path string, files []RemoteFile) error {
 
 	w := csv.NewWriter(f)
 	w.Comma = '\t'
-	rows := [][]string{{"run_accession", "kind", "size_bytes", "url"}}
+	rows := [][]string{{"run_accession", "kind", "size_bytes", "md5", "url"}}
 	for _, file := range files {
-		rows = append(rows, []string{file.RunAccession, file.Kind, file.SizeBytes, file.URL})
+		rows = append(rows, []string{file.RunAccession, file.Kind, file.SizeBytes, file.MD5Hex, file.URL})
 	}
 	if err := w.WriteAll(rows); err != nil {
 		return err
@@ -489,6 +503,47 @@ func dedupFiles(files []RemoteFile) []RemoteFile {
 		return out[i].URL < out[j].URL
 	})
 	return out
+}
+
+func downloadFileName(file RemoteFile) string {
+	fileName := safeLeaf(file.URL)
+	if file.Kind == "sra" && !strings.HasSuffix(strings.ToLower(fileName), ".sra") {
+		return file.RunAccession + ".sra"
+	}
+	return fileName
+}
+
+func verifyRemoteFile(path string, file RemoteFile) error {
+	if file.MD5Hex == "" {
+		return nil
+	}
+	if file.SizeBytes != "" {
+		expectedSize, err := strconv.ParseInt(file.SizeBytes, 10, 64)
+		if err != nil || expectedSize < 1 {
+			return fmt.Errorf("sra: invalid expected size for %s: %q", file.URL, file.SizeBytes)
+		}
+		fileInfo, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("sra: stat downloaded file %s: %w", path, err)
+		}
+		if fileInfo.Size() != expectedSize {
+			return fmt.Errorf("sra: size mismatch for %s: got %d want %d", path, fileInfo.Size(), expectedSize)
+		}
+	}
+	input, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("sra: open downloaded file %s: %w", path, err)
+	}
+	defer input.Close()
+	checksum := md5.New()
+	if _, err := io.Copy(checksum, input); err != nil {
+		return fmt.Errorf("sra: checksum downloaded file %s: %w", path, err)
+	}
+	actualMD5 := hex.EncodeToString(checksum.Sum(nil))
+	if !strings.EqualFold(actualMD5, file.MD5Hex) {
+		return fmt.Errorf("sra: MD5 mismatch for %s: got %s want %s", path, actualMD5, file.MD5Hex)
+	}
+	return nil
 }
 
 func safeLeaf(rawURL string) string {
