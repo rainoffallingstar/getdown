@@ -36,6 +36,19 @@ func resp(status int, headers map[string]string, body []byte, req *http.Request)
 	}
 }
 
+type interruptedReader struct {
+	data    []byte
+	emitted bool
+}
+
+func (reader *interruptedReader) Read(destination []byte) (int, error) {
+	if reader.emitted {
+		return 0, io.ErrUnexpectedEOF
+	}
+	reader.emitted = true
+	return copy(destination, reader.data), nil
+}
+
 func TestDownloadToFileMaybe_ResumeRaw(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -72,6 +85,45 @@ func TestDownloadToFileMaybe_ResumeRaw(t *testing.T) {
 	}
 	if _, err := os.Stat(part); err == nil {
 		t.Fatalf("expected part to be removed")
+	}
+}
+
+func TestDownloadToFileMaybe_ResumesAfterInterruptedResponse(t *testing.T) {
+	ctx := context.Background()
+	destinationPath := filepath.Join(t.TempDir(), "file.bin")
+	data := []byte("helloworld")
+	requestCount := 0
+
+	client := NewWithRoundTripper(stubTransport{roundTrip: func(request *http.Request) (*http.Response, error) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			if request.Header.Get("Range") != "" {
+				t.Fatalf("first request unexpectedly used Range: %q", request.Header.Get("Range"))
+			}
+			response := resp(http.StatusOK, map[string]string{"Content-Type": "application/octet-stream"}, nil, request)
+			response.Body = io.NopCloser(&interruptedReader{data: data[:5]})
+			return response, nil
+		case 2:
+			if request.Header.Get("Range") != "bytes=5-" {
+				t.Fatalf("resume request Range: got %q want %q", request.Header.Get("Range"), "bytes=5-")
+			}
+			return resp(http.StatusPartialContent, map[string]string{"Content-Type": "application/octet-stream"}, data[5:], request), nil
+		default:
+			t.Fatalf("unexpected request count: %d", requestCount)
+			return nil, nil
+		}
+	}})
+
+	if _, err := client.DownloadToFileMaybe(ctx, "https://example.test/file", destinationPath, false); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	actualData, err := os.ReadFile(destinationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(actualData, data) {
+		t.Fatalf("downloaded data: got %q want %q", actualData, data)
 	}
 }
 

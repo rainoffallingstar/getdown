@@ -232,7 +232,8 @@ func (c *Client) downloadRawMaybe(ctx context.Context, url, destPath string) (Do
 
 	partPath := destPath + ".part"
 	start, _ := fileSize(partPath)
-	for attempt := 0; attempt < 2; attempt++ {
+	var lastTransferError error
+	for attempt := 0; attempt < 5; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return DownloadResult{}, err
@@ -320,7 +321,16 @@ func (c *Client) downloadRawMaybe(ctx context.Context, url, destPath string) (Do
 		closeErr := f.Close()
 		resp.Body.Close()
 		if copyErr != nil {
-			return DownloadResult{}, copyErr
+			lastTransferError = copyErr
+			if ctx.Err() != nil {
+				return DownloadResult{}, ctx.Err()
+			}
+			resumedSize, hasPartialFile := fileSize(partPath)
+			if !hasPartialFile || resumedSize <= start {
+				return DownloadResult{}, copyErr
+			}
+			start = resumedSize
+			continue
 		}
 		if closeErr != nil {
 			return DownloadResult{}, closeErr
@@ -338,6 +348,9 @@ func (c *Client) downloadRawMaybe(ctx context.Context, url, destPath string) (Do
 			SourceURL:  url,
 			WasGzipped: false,
 		}, nil
+	}
+	if lastTransferError != nil {
+		return DownloadResult{}, fmt.Errorf("GET %s: retry limit reached: %w", url, lastTransferError)
 	}
 	return DownloadResult{}, fmt.Errorf("GET %s: resume failed", url)
 }
